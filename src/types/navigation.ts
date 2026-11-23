@@ -18,7 +18,8 @@ export type NavItemId =
   | 'ai-risk-center'
   | 'progress-monitoring'
   | 'site-reports'
-  | 'procurement';
+  | 'procurement'
+  | 'data-tables';
 
 export interface NavItemConfig {
   id: NavItemId;
@@ -62,34 +63,24 @@ export const NAV_ITEMS: NavItemConfig[] = [
 export const ELENOR_NAV_ITEMS: NavItemConfig[] = [
   {
     id: 'executive-dashboard',
-    label: 'Executive Dashboard',
-    description: 'Project information, timeline, status/cost/efficiency and task closing for Nyati Elenor.',
+    label: 'Dashboard',
+    description: 'Project overview, or everything for one building when a building is selected.',
   },
   {
-    id: 'work-packages',
-    label: 'Work Packages',
-    description: 'Building-wise task groups (A, B, Development) with baseline, planned and actual cost.',
+    id: 'data-tables',
+    label: 'Detail Tables',
+    description: 'Exact figures from PLN/407, filtered by the selected building.',
   },
-  {
-    id: 'budget-boq',
-    label: 'Budget & BOQ',
-    description: 'Upto date cost status by building, planned vs actual cost and FY actual cost.',
-  },
-  {
-    id: 'ai-risk-center',
-    label: 'AI Risk Center',
-    description: 'Risks derived from failed targets, low-efficiency task groups, procurement and contractor gaps.',
-  },
-  {
-    id: 'progress-monitoring',
-    label: 'Progress Monitoring',
-    description: 'Monthly progress, Q3 target vs actual, Aluform casting cycles and Highrise status.',
-  },
-  {
-    id: 'procurement',
-    label: 'Purchasing & Contractors',
-    description: 'Bulk purchasing (PLN/409) and contractor deployment (PLN/410) for Q3 2026.',
-  },
+];
+
+/** Building filter for Nyati Elenor ('all' = whole project). */
+export type ElenorBuilding = 'all' | 'A' | 'B' | 'Development';
+
+export const ELENOR_BUILDINGS: Array<{ id: ElenorBuilding; label: string }> = [
+  { id: 'all', label: 'Whole Project' },
+  { id: 'A', label: 'A Building' },
+  { id: 'B', label: 'B Building' },
+  { id: 'Development', label: 'Development' },
 ];
 
 export function getNavItems(project: ProjectId): NavItemConfig[] {

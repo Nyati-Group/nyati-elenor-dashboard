@@ -6,9 +6,11 @@ import {
   TrendingUp,
   ClipboardList,
   PackageCheck,
+  Table2,
+  Sparkles,
   X,
 } from 'lucide-react';
-import { NavItemConfig, NavItemId } from '../types/navigation';
+import { NavItemConfig, NavItemId, ProjectId } from '../types/navigation';
 
 interface SidebarProps {
   activeNav: NavItemId;
@@ -19,6 +21,8 @@ interface SidebarProps {
   scope: string;
   projectName: string;
   navItems: NavItemConfig[];
+  activeProject?: ProjectId;
+  onOpenChatbot?: (query?: string) => void;
 }
 
 const NAV_ICONS: Record<NavItemId, React.ComponentType<{ className?: string }>> = {
@@ -29,6 +33,7 @@ const NAV_ICONS: Record<NavItemId, React.ComponentType<{ className?: string }>> 
   'progress-monitoring': TrendingUp,
   'site-reports': ClipboardList,
   procurement: PackageCheck,
+  'data-tables': Table2,
 };
 
 export function Sidebar({
@@ -40,6 +45,7 @@ export function Sidebar({
   scope,
   projectName,
   navItems,
+  onOpenChatbot,
 }: SidebarProps) {
   const handleSelect = (id: NavItemId) => {
     onSelectNav(id);
@@ -104,6 +110,24 @@ export function Sidebar({
             </button>
           );
         })}
+
+        {/* AI Assistant Nav Link */}
+        <button
+          type="button"
+          onClick={() => {
+            onOpenChatbot?.();
+            onCloseMobile();
+          }}
+          className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-left text-[13.5px] font-medium transition-all duration-150 text-slate-300 hover:bg-slate-800/70 hover:text-white group active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <Sparkles className="h-4 w-4 shrink-0 text-sky-400 group-hover:text-sky-300 transition-colors" />
+            <span className="truncate whitespace-nowrap">AI Assistant</span>
+          </div>
+          <span className="rounded-full bg-sky-500/20 px-2 py-0.5 text-[10px] font-semibold text-sky-300 border border-sky-500/30">
+            Chat
+          </span>
+        </button>
       </nav>
 
       {/* Bottom Project Reference */}

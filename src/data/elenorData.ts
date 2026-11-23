@@ -212,6 +212,7 @@ export const ELENOR_DATA = {
     ] as ElenorCastingRow[],
     totalFloors: 32,
     note: 'Unavailability of Concrete due to RMC Strike across Pune from 16/04/26 to 08/05/26 (23 Days)',
+    strike: { from: '16/04/2026', to: '08/05/2026', days: 23 },
   },
 
   // Slide 13 — Activity-wise Actual vs Highrise Work Status (upto 31.10.2026)

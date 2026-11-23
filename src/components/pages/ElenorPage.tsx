@@ -1,134 +1,149 @@
-import { Fragment, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import {
-  BarChart,
+  Area,
+  AreaChart,
   Bar,
-  LineChart,
+  BarChart,
+  CartesianGrid,
+  LabelList,
   Line,
+  LineChart,
+  ReferenceArea,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-  LabelList,
-  ReferenceArea,
-  ReferenceLine,
-  Cell as CellFill,
 } from 'recharts';
-import { Building2, CalendarDays, CheckCircle2, ListTodo, MapPin } from 'lucide-react';
 import {
-  ELENOR_DATA,
-  ElenorCastingRow,
-  ElenorCostRow,
-  ElenorRiskSeverity,
-  ElenorTargetRow,
-  TargetStatus,
-  computeElenorRisks,
-} from '../../data/elenorData';
+  ArrowUpRight,
+  CheckCircle2,
+  CircleDot,
+  Minus,
+  XCircle,
+  X,
+  Search,
+  Filter,
+  ShieldAlert,
+  Clock,
+  Layers,
+  TrendingUp,
+} from 'lucide-react';
+import { ELENOR_DATA, ElenorCostRow, ElenorRiskSeverity, ElenorTargetRow, TargetStatus, computeElenorRisks } from '../../data/elenorData';
+import { ElenorBuilding } from '../../types/navigation';
 
-/* --------------------------------- Chart theme -------------------------------- */
-// Categorical slots 1–3 (validated: CVD & normal-vision separation pass, all pairs).
-// Slot 3 (aqua) is below 3:1 contrast on white, so charts using it always carry
-// direct labels or a table view.
-const SERIES = {
-  s1: '#2a78d6', // blue   — Planned / A Bldg.
-  s2: '#eb6834', // orange — Actual / B Bldg.
-  s3: '#1baf7a', // aqua   — Development
-};
-const GRID = '#E2E8F0';
-const AXIS_TICK = { fontSize: 11, fill: '#475569' };
-const LABEL_TEXT = { fontSize: 10, fill: '#334155', fontWeight: 600 };
+/* ================================== Theme & helpers ================================== */
 
-const TOOLTIP_STYLE = {
-  borderRadius: '8px',
+const D = ELENOR_DATA;
+type Bldg = Exclude<ElenorBuilding, 'all'>;
+const BLDGS: Bldg[] = ['A', 'B', 'Development'];
+
+// Restrained palette: one accent for "actual", neutral grey for "planned"/context.
+const C = { actual: '#2a78d6', plan: '#94A3B8', context: '#CBD5E1', time: '#475569', grid: '#E2E8F0' };
+const TONE = { good: '#16A34A', part: '#D97706', bad: '#DC2626', none: '#CBD5E1' } as const;
+type Tone = keyof typeof TONE;
+
+const AXIS_TICK = { fontSize: 11, fill: '#64748B' };
+const TIP = {
+  borderRadius: 8,
   border: '1px solid #E2E8F0',
-  fontSize: '12px',
+  fontSize: 12,
   boxShadow: '0 4px 12px rgba(15, 23, 42, 0.08)',
 };
 
-type ProgressTabId = 'monthly' | 'targets' | 'aluform';
+const num = (v: string | null | undefined) => (v ? parseFloat(v.replace(/,/g, '')) : 0);
+const lacs = (v: number) => v.toLocaleString('en-IN', { maximumFractionDigits: 0 });
 
-const PROGRESS_TABS: Array<{ id: ProgressTabId; label: string }> = [
-  { id: 'monthly', label: 'Monthly Progress' },
-  { id: 'targets', label: 'Target vs Actual' },
-  { id: 'aluform', label: 'Aluform & Highrise' },
-];
-
-const TARGET_STATUS_CLASS: Record<Exclude<TargetStatus, null>, string> = {
-  Achieved: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  'Partly Done': 'bg-amber-50 text-amber-800 border-amber-200',
-  Failed: 'bg-red-50 text-red-800 border-red-200',
-};
-
-const TARGET_STATUS_FILL: Record<Exclude<TargetStatus, null>, string> = {
-  Achieved: '#16A34A',
-  'Partly Done': '#D97706',
-  Failed: '#DC2626',
-};
-
-function pctNum(v: string | null): number {
-  return v ? parseFloat(v) : 0;
+function effTone(eff: number | null): Tone {
+  if (eff === null || Number.isNaN(eff)) return 'none';
+  if (eff >= 85) return 'good';
+  if (eff >= 60) return 'part';
+  return 'bad';
 }
 
-function efficiencyClass(eff: string | null): string {
-  if (!eff) return 'text-slate-400';
-  const n = parseFloat(eff);
-  if (n >= 85) return 'text-emerald-700';
-  if (n >= 60) return 'text-amber-700';
-  return 'text-red-700';
-}
-
-function statusTextClass(text: string): string {
+function textTone(text: string | undefined | null): Tone {
+  if (!text || text === '-') return 'none';
   const t = text.toLowerCase();
-  if (t.startsWith('not given') || t.startsWith('not done')) return 'text-red-700 font-semibold';
-  if (t === 'given' || t === 'completed') return 'text-emerald-700 font-semibold';
-  if (t.startsWith('part')) return 'text-sky-700 font-medium';
-  if (t.includes('done') || t.includes('given')) return 'text-emerald-700 font-medium';
-  return 'text-slate-700';
+  if (t.startsWith('not')) return 'bad';
+  if (t.includes('part') || t.includes('sample')) return 'part';
+  return 'good';
 }
 
-/** Parses dd/mm/yyyy into a timestamp. */
+const STATUS_TONE: Record<Exclude<TargetStatus, null>, Tone> = {
+  Achieved: 'good',
+  'Partly Done': 'part',
+  Failed: 'bad',
+};
+
 function parseDmy(d: string): number {
   const [dd, mm, yyyy] = d.split('/').map(Number);
   return new Date(yyyy, mm - 1, dd).getTime();
 }
 
-function formatShortDate(ts: number): string {
-  return new Date(ts).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+/** Highest floor number mentioned, e.g. "12th & 13th Floor" -> 13. */
+function topFloor(text: string): number | null {
+  const nums = [...text.matchAll(/(\d+)(?:st|nd|rd|th)/g)].map((m) => Number(m[1]));
+  return nums.length ? Math.max(...nums) : null;
 }
 
-/** Label renderer that only labels the last point of a line (selective direct labels). */
-function lastPointLabel(lastIndex: number, color: string, suffix = '%') {
-  return (props: { x?: number | string; y?: number | string; index?: number; value?: unknown }) => {
-    if (props.index !== lastIndex || props.x === undefined || props.y === undefined) return null;
-    return (
-      <text x={Number(props.x) + 8} y={Number(props.y) + 4} fontSize={11} fontWeight={600} fill="#0F172A">
-        <tspan fill={color}>●</tspan> {Number(props.value).toFixed(2)}
-        {suffix}
-      </text>
-    );
+/** Floors completed, counting part floors, e.g. "4th Floor – 2/4 Flats Complete" -> 3.5. */
+function achievedFloor(text: string): number | null {
+  const floor = topFloor(text);
+  if (floor === null) return null;
+  const frac = text.match(/(\d)\/4/);
+  return frac ? floor - 1 + Number(frac[1]) / 4 : floor;
+}
+
+function bldgInfo(b: Bldg) {
+  const upto = D.uptoDateStatus[b === 'A' ? 1 : b === 'B' ? 2 : 3];
+  const monthKey: 'aBldg' | 'bBldg' | 'dev' = b === 'A' ? 'aBldg' : b === 'B' ? 'bBldg' : 'dev';
+  const fyCost =
+    b === 'A' ? D.fyActualCostUptoOct.aBldg : b === 'B' ? D.fyActualCostUptoOct.bBldg : D.fyActualCostUptoOct.development;
+  const side: 'a' | 'b' | null = b === 'A' ? 'a' : b === 'B' ? 'b' : null;
+  const cast = b === 'Development' ? null : D.aluformCasting[b];
+  return {
+    label: b === 'Development' ? 'Development' : `${b} Building`,
+    upto,
+    monthKey,
+    fyCost,
+    side,
+    cast,
+    floorsCast: cast ? cast.filter((r) => r.date).length : 0,
+    targets: D.targetVsActual[b],
+    cost: D.buildingProgress[b],
   };
 }
 
-/* ------------------------------- Shared building blocks ------------------------------- */
+function targetCounts(rows: ElenorTargetRow[]) {
+  const withStatus = rows.filter((r) => r.status);
+  return {
+    total: withStatus.length,
+    met: withStatus.filter((r) => r.status === 'Achieved').length,
+    partly: withStatus.filter((r) => r.status === 'Partly Done').length,
+    failed: withStatus.filter((r) => r.status === 'Failed').length,
+  };
+}
 
-function Section({
+/* ================================== Building blocks ================================== */
+
+function Card({
   title,
-  subtitle,
+  hint,
   action,
   children,
+  className = '',
 }: {
   title: string;
-  subtitle?: string;
+  hint?: string;
   action?: React.ReactNode;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
-      <div className="pb-3 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="font-display text-sm font-semibold text-slate-900">{title}</h3>
-          {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
+    <section className={`h-full rounded-2xl border border-slate-200/80 bg-white/90 backdrop-blur-md p-4 sm:p-5 shadow-[0_1px_3px_rgba(0,0,0,0.03),0_6px_16px_rgba(0,0,0,0.02)] transition-shadow duration-200 hover:shadow-[0_2px_8px_rgba(0,0,0,0.05),0_12px_24px_rgba(0,0,0,0.03)] ${className}`}>
+      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <div className="flex items-baseline gap-2">
+          <h3 className="font-display text-sm font-semibold tracking-tight text-slate-900">{title}</h3>
+          {hint && <span className="text-xs text-slate-500 font-normal">{hint}</span>}
         </div>
         {action}
       </div>
@@ -137,1391 +152,3534 @@ function Section({
   );
 }
 
-function Th({ children, className = '' }: { children?: React.ReactNode; className?: string }) {
-  return (
-    <th
-      scope="col"
-      className={`px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap ${className}`}
-    >
-      {children}
-    </th>
-  );
-}
-
-function Dash() {
-  return <span className="text-slate-300">—</span>;
-}
-
-function Kpi({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'warn' }) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <p className="text-xs font-medium text-slate-500">{label}</p>
-      <p
-        className={`mt-1 font-mono text-xl sm:text-2xl font-semibold tabular-nums ${
-          tone === 'warn' ? 'text-red-700' : 'text-slate-900'
-        }`}
-      >
-        {value}
-      </p>
-      {sub && <p className="mt-0.5 text-xs text-slate-500 font-mono tabular-nums">{sub}</p>}
-    </div>
-  );
-}
-
-function LegendSwatch({ color, label }: { color: string; label: string }) {
+function Swatch({ color, label, dashed }: { color: string; label: string; dashed?: boolean }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
-      <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: color }} />
+      <span
+        className="inline-block h-0.5 w-3.5 rounded-full"
+        style={dashed ? { borderTop: `2px dashed ${color}` } : { backgroundColor: color, height: 3 }}
+      />
       {label}
     </span>
   );
 }
 
-function SegmentedToggle<T extends string>({
-  options,
-  value,
-  onChange,
-}: {
-  options: Array<{ id: T; label: string }>;
-  value: T;
-  onChange: (v: T) => void;
-}) {
+function Dot({ color, ring }: { color: string; ring?: boolean }) {
   return (
-    <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1" role="group">
-      {options.map((o) => (
-        <button
-          key={o.id}
-          type="button"
-          aria-pressed={value === o.id}
-          onClick={() => onChange(o.id)}
-          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-            value === o.id ? 'bg-[#0F1E36] text-white' : 'text-slate-600 hover:bg-slate-50'
-          }`}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
+    <span
+      className="inline-block h-2.5 w-2.5 rounded-full"
+      style={ring ? { border: `2px solid ${color}`, background: '#fff' } : { backgroundColor: color }}
+    />
   );
 }
 
-type BldgKey = 'A' | 'B' | 'Development';
-const BLDG_OPTIONS: Array<{ id: BldgKey; label: string }> = [
-  { id: 'A', label: 'A Building' },
-  { id: 'B', label: 'B Building' },
-  { id: 'Development', label: 'Development' },
-];
+function ToneIcon({ tone, className = 'h-4 w-4' }: { tone: Tone; className?: string }) {
+  const style = { color: TONE[tone] };
+  if (tone === 'good') return <CheckCircle2 className={className} style={style} aria-label="Done" />;
+  if (tone === 'part') return <CircleDot className={className} style={style} aria-label="Partly done" />;
+  if (tone === 'bad') return <XCircle className={className} style={style} aria-label="Not done" />;
+  return <Minus className={className} style={style} aria-label="Not scheduled" />;
+}
 
-/** Bullet meter: actual bar against a planned marker on a 0–max track. */
-function BulletMeter({
-  label,
-  actual,
-  planned,
-  max,
-  actualLabel,
-  plannedLabel,
-  right,
-}: {
-  label: string;
-  actual: number;
-  planned: number;
-  max: number;
-  actualLabel: string;
-  plannedLabel: string;
-  right?: React.ReactNode;
-}) {
-  const a = Math.min(100, (actual / max) * 100);
-  const p = Math.min(100, (planned / max) * 100);
+function Effi({ value }: { value: string | null }) {
+  if (!value) return <span className="text-slate-300">—</span>;
   return (
-    <div>
-      <div className="flex items-baseline justify-between gap-3 mb-1.5">
-        <p className="text-sm font-semibold text-slate-900">{label}</p>
-        <p className="text-xs text-slate-500 font-mono tabular-nums">
-          Actual <span className="font-semibold text-slate-900">{actualLabel}</span> · Planned{' '}
-          <span className="font-semibold text-slate-900">{plannedLabel}</span>
-          {right}
-        </p>
-      </div>
-      <div
-        className="relative h-3 rounded-full bg-slate-100"
-        role="img"
-        aria-label={`${label}: actual ${actualLabel}, planned ${plannedLabel}`}
-      >
-        <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${a}%`, backgroundColor: SERIES.s2 }} />
-        <div
-          className="absolute -top-1 -bottom-1 w-[3px] rounded-full"
-          style={{ left: `calc(${p}% - 1.5px)`, backgroundColor: SERIES.s1 }}
-          title={`Planned ${plannedLabel}`}
+    <span className="inline-flex items-center gap-1.5 font-mono text-xs font-semibold tabular-nums text-slate-900">
+      <Dot color={TONE[effTone(num(value))]} />
+      {value}
+    </span>
+  );
+}
+
+interface DonutSlice {
+  name: string;
+  value: number;
+  color: string;
+  formatted?: string;
+}
+
+interface KpiDonutData {
+  title: string;
+  centerText: string;
+  centerSub: string;
+  slices: DonutSlice[];
+  footerNote?: string;
+}
+
+function SvgDonut({
+  slices,
+  centerText,
+  centerSub,
+  size = 116,
+  strokeWidth = 15,
+  activeSliceIndex = null,
+  onHoverSlice,
+}: {
+  slices: DonutSlice[];
+  centerText: string;
+  centerSub: string;
+  size?: number;
+  strokeWidth?: number;
+  activeSliceIndex?: number | null;
+  onHoverSlice?: (idx: number | null) => void;
+}) {
+  const total = slices.reduce((s, d) => s + Math.max(0, d.value), 0);
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+
+  let cumulativeOffset = 0;
+  const hasActive = activeSliceIndex !== null && activeSliceIndex !== undefined && slices[activeSliceIndex] !== undefined;
+  const activeSlice = hasActive ? slices[activeSliceIndex!] : null;
+
+  const displayCenterText = activeSlice ? (activeSlice.formatted ?? `${activeSlice.value}`) : centerText;
+  const displayCenterSub = activeSlice ? activeSlice.name : centerSub;
+
+  return (
+    <div className="relative flex items-center justify-center shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="rotate-[-90deg]">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="#F1F5F9"
+          strokeWidth={strokeWidth}
         />
-      </div>
-    </div>
-  );
-}
+        {total > 0 &&
+          slices.map((slice, i) => {
+            if (slice.value <= 0) return null;
+            const pct = slice.value / total;
+            const strokeDasharray = `${pct * circumference} ${circumference}`;
+            const strokeDashoffset = -cumulativeOffset * circumference;
+            cumulativeOffset += pct;
+            const isThisActive = activeSliceIndex === i;
 
-/* ------------------------------------- Overview ------------------------------------- */
-
-function UptoDateStatusTable() {
-  const { uptoDateStatus } = ELENOR_DATA;
-  return (
-    <Section title="Upto Date Status — From Start of the Project" subtitle="Amounts in ₹ Crore">
-      <div className="overflow-x-auto -mx-5">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 border-y border-slate-200">
-            <tr>
-              <Th className="pl-5">Project</Th>
-              <Th className="text-right">Total Cost (Cr)</Th>
-              <Th className="text-right">Planned %</Th>
-              <Th className="text-right">Planned Cost (Cr)</Th>
-              <Th className="text-right">Actual %</Th>
-              <Th className="text-right">Actual Cost (Cr)</Th>
-              <Th className="text-right pr-5">Effi. %</Th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {uptoDateStatus.map((row) => (
-              <tr key={row.project} className={row.isTotal ? 'bg-slate-50/70' : ''}>
-                <td className="pl-5 pr-3 py-3">
-                  <p className={`font-semibold ${row.isTotal ? 'text-red-700' : 'text-slate-900'}`}>{row.project}</p>
-                  {row.detail && <p className="text-xs text-slate-500">{row.detail}</p>}
-                </td>
-                <td className="px-3 py-3 text-right font-mono tabular-nums font-semibold text-slate-900">{row.totalCost}</td>
-                <td className="px-3 py-3 text-right font-mono tabular-nums text-slate-700">{row.plannedPct}</td>
-                <td className="px-3 py-3 text-right font-mono tabular-nums text-slate-700">{row.plannedCost}</td>
-                <td className="px-3 py-3 text-right font-mono tabular-nums text-slate-900 font-medium">{row.actualPct}</td>
-                <td className="px-3 py-3 text-right font-mono tabular-nums text-slate-900 font-medium">{row.actualCost}</td>
-                <td className={`pl-3 pr-5 py-3 text-right font-mono tabular-nums font-semibold ${efficiencyClass(row.efficiency)}`}>
-                  {row.efficiency}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Section>
-  );
-}
-
-function ProgressVsTime() {
-  const { timeline, uptoDateStatus } = ELENOR_DATA;
-  const total = uptoDateStatus[0];
-  const timePct = (timeline.elapsedMonths / timeline.totalMonths) * 100;
-  const rows = [
-    { label: 'Time elapsed', value: timePct, text: `${timeline.elapsedMonths} of ${timeline.totalMonths} months`, color: '#94A3B8' },
-    { label: 'Planned progress', value: pctNum(total.plannedPct), text: total.plannedPct, color: SERIES.s1 },
-    { label: 'Actual progress', value: pctNum(total.actualPct), text: total.actualPct, color: SERIES.s2 },
-  ];
-  return (
-    <Section
-      title="Progress vs Time"
-      subtitle={`Upto ${timeline.current} · time elapsed is derived from the 23 of 53 month timeline`}
-    >
-      <div className="space-y-3.5">
-        {rows.map((r) => (
-          <div key={r.label} className="grid grid-cols-[120px_1fr_auto] sm:grid-cols-[140px_1fr_auto] items-center gap-3">
-            <span className="text-xs font-medium text-slate-600">{r.label}</span>
-            <div className="h-3 rounded-full bg-slate-100 overflow-hidden" role="img" aria-label={`${r.label} ${r.text}`}>
-              <div className="h-full rounded-full" style={{ width: `${r.value}%`, backgroundColor: r.color }} />
-            </div>
-            <span className="font-mono text-xs font-semibold text-slate-900 tabular-nums w-28 text-right">{r.text}</span>
-          </div>
-        ))}
-      </div>
-    </Section>
-  );
-}
-
-function BuildingProgressMeters() {
-  const rows = ELENOR_DATA.uptoDateStatus.filter((r) => !r.isTotal);
-  return (
-    <Section
-      title="Progress by Building — Upto Date"
-      subtitle="Bar = actual %, marker = planned % (scale 0–20%)"
-      action={
-        <div className="flex gap-3">
-          <LegendSwatch color={SERIES.s2} label="Actual" />
-          <LegendSwatch color={SERIES.s1} label="Planned" />
-        </div>
-      }
-    >
-      <div className="space-y-5">
-        {rows.map((r) => (
-          <BulletMeter
-            key={r.project}
-            label={r.project.replace(' - (B2+B1+G+32)', '')}
-            actual={pctNum(r.actualPct)}
-            planned={pctNum(r.plannedPct)}
-            max={20}
-            actualLabel={r.actualPct}
-            plannedLabel={r.plannedPct}
-            right={
-              <span className={`ml-2 font-semibold ${efficiencyClass(r.efficiency)}`}>Effi. {r.efficiency}</span>
-            }
-          />
-        ))}
-      </div>
-    </Section>
-  );
-}
-
-function OverviewTab() {
-  const { projectInfo, timeline, uptoDateStatus, statusSummary, taskClosing } = ELENOR_DATA;
-  const elapsedPct = (timeline.elapsedMonths / timeline.totalMonths) * 100;
-  const total = uptoDateStatus[0];
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Kpi label="Signed off / Baseline Cost" value="₹371.22 Cr" />
-        <Kpi label="Actual Progress (Upto Date)" value={total.actualPct} sub={`Planned ${total.plannedPct}`} />
-        <Kpi label="Actual Cost (Upto Date)" value={`₹${total.actualCost} Cr`} sub={`Planned ₹${total.plannedCost} Cr`} />
-        <Kpi label="Efficiency (Upto Date)" value={total.efficiency} tone="warn" />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ProgressVsTime />
-        <BuildingProgressMeters />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-5">
-          <Section title="Project Information">
-            <dl className="divide-y divide-slate-100">
-              {projectInfo.map((row) => (
-                <div key={row.label} className="flex items-start justify-between gap-4 py-2.5">
-                  <dt className="text-xs font-medium text-slate-500">{row.label}</dt>
-                  <dd className="text-sm font-semibold text-slate-900 text-right">{row.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </Section>
-        </div>
-
-        <div className="lg:col-span-7">
-          <Section
-            title="Project Timeline"
-            subtitle={`${timeline.elapsedMonths} of ${timeline.totalMonths} months elapsed · ${timeline.current} progress ${timeline.currentProgress}`}
-          >
-            <div>
-              <div className="flex justify-between text-[11px] font-semibold text-slate-600 mb-1.5">
-                <span>{timeline.start} · Project Start</span>
-                <span>{timeline.finish} · Project Finish</span>
-              </div>
-              <div className="relative h-2.5 rounded-full bg-slate-100 overflow-hidden">
-                <div className="absolute inset-y-0 left-0 rounded-full bg-[#0F1E36]" style={{ width: `${elapsedPct}%` }} />
-              </div>
-            </div>
-            <ol className="relative border-l border-slate-200 ml-1.5 space-y-3 pt-1">
-              <TimelineItem date={timeline.start} text="Project Start" />
-              {timeline.milestones.map((m) => (
-                <TimelineItem key={m.date + m.event} date={m.date} text={m.event} highlight />
-              ))}
-              <TimelineItem date={timeline.current} text={`Current status — ${timeline.currentProgress} complete`} current />
-              <TimelineItem date={timeline.finish} text="Project Finish" />
-            </ol>
-          </Section>
-        </div>
-      </div>
-
-      <UptoDateStatusTable />
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-8">
-          <Section title="Status · Cost · Efficiency">
-            <div className="overflow-x-auto -mx-5">
-              <table className="min-w-full text-sm">
-                <thead className="bg-slate-50 border-y border-slate-200">
-                  <tr>
-                    <Th className="pl-5">Period</Th>
-                    <Th>Status</Th>
-                    <Th className="text-right">%</Th>
-                    <Th className="text-right">Cost</Th>
-                    <Th className="text-right pr-5">Efficiency</Th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {statusSummary.map((row) => (
-                    <Fragment key={row.period}>
-                      <tr>
-                        <td rowSpan={2} className="pl-5 pr-3 py-3 font-semibold text-slate-900 align-middle max-w-[220px]">
-                          {row.period}
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <span className="rounded-md bg-orange-50 px-2 py-0.5 text-xs font-semibold text-orange-800">Actual</span>
-                        </td>
-                        <td className="px-3 py-2.5 text-right font-mono tabular-nums font-semibold">{row.actualPct}</td>
-                        <td className="px-3 py-2.5 text-right font-mono tabular-nums font-semibold">{row.actualCost}</td>
-                        <td rowSpan={2} className="pl-3 pr-5 py-3 text-right font-mono text-lg tabular-nums font-semibold text-red-700 align-middle">
-                          {row.efficiency}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td className="px-3 py-2.5">
-                          <span className="rounded-md bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-800">Planned</span>
-                        </td>
-                        <td className="px-3 py-2.5 text-right font-mono tabular-nums">{row.plannedPct}</td>
-                        <td className="px-3 py-2.5 text-right font-mono tabular-nums">{row.plannedCost}</td>
-                      </tr>
-                    </Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Section>
-        </div>
-
-        <div className="lg:col-span-4">
-          <Section title="Summary of Task Closing">
-            <div className="space-y-3">
-              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4 flex items-start gap-3">
-                <ListTodo className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-xs font-medium text-slate-500">Open Tasks (Count &amp; Amount)</p>
-                  <p className="mt-1 font-mono text-xl font-semibold text-slate-900 tabular-nums">{taskClosing.openTaskCount}</p>
-                  <p className="font-mono text-sm font-medium text-slate-700 tabular-nums">₹{taskClosing.openTaskAmount}</p>
-                </div>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4 flex items-start gap-3">
-                <CheckCircle2 className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-xs font-medium text-slate-500">Tasks Closed in {taskClosing.closedInMonthLabel}</p>
-                  <p className="mt-1 font-mono text-xl font-semibold text-slate-900 tabular-nums">{taskClosing.closedInMonth}</p>
-                </div>
-              </div>
-            </div>
-          </Section>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TimelineItem({
-  date,
-  text,
-  highlight,
-  current,
-}: {
-  date: string;
-  text: string;
-  highlight?: boolean;
-  current?: boolean;
-}) {
-  const dot = current
-    ? 'bg-emerald-500 ring-emerald-100'
-    : highlight
-    ? 'bg-amber-400 ring-amber-100'
-    : 'bg-[#0F1E36] ring-slate-100';
-  return (
-    <li className="ml-4">
-      <span className={`absolute -left-[5px] mt-1.5 h-2.5 w-2.5 rounded-full ring-4 ${dot}`} />
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{date}</p>
-      <p className={`text-sm ${current ? 'font-semibold text-emerald-800' : 'text-slate-800'}`}>{text}</p>
-    </li>
-  );
-}
-
-/* ---------------------------------- Monthly progress ---------------------------------- */
-
-function ProgressTab() {
-  const { monthwise, buildingWiseMonthly } = ELENOR_DATA;
-  const pct = (v: unknown) => `${Number(v ?? 0).toFixed(2)}%`;
-  const last = monthwise.length - 1;
-
-  return (
-    <div className="space-y-6">
-      <Section
-        title="Monthwise Progress — Nyati Elenor"
-        subtitle="Planned vs actual progress each month (% of project) · FY 2026-27"
-      >
-        <div className="h-72 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={monthwise} margin={{ top: 16, right: 72, left: -8, bottom: 4 }}>
-              <CartesianGrid stroke={GRID} vertical={false} />
-              <XAxis dataKey="month" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: GRID }} />
-              <YAxis tick={AXIS_TICK} tickFormatter={(v) => `${v}%`} domain={[0, 1.6]} tickLine={false} axisLine={false} />
-              <Tooltip formatter={(v, n) => [pct(v), n]} contentStyle={TOOLTIP_STYLE} cursor={{ stroke: '#94A3B8', strokeDasharray: '3 3' }} />
-              <Legend wrapperStyle={{ fontSize: 12 }} iconType="circle" />
-              <Line isAnimationActive={false}
-                type="monotone"
-                dataKey="planned"
-                name="Planned %"
-                stroke={SERIES.s1}
-                strokeWidth={2}
-                dot={{ r: 4, strokeWidth: 2, stroke: '#fff', fill: SERIES.s1 }}
-                activeDot={{ r: 6 }}
-                label={lastPointLabel(last, SERIES.s1)}
+            return (
+              <circle
+                key={slice.name + i}
+                cx={size / 2}
+                cy={size / 2}
+                r={radius}
+                fill="none"
+                stroke={slice.color}
+                strokeWidth={isThisActive ? strokeWidth + 2.5 : strokeWidth}
+                strokeDasharray={strokeDasharray}
+                strokeDashoffset={strokeDashoffset}
+                strokeLinecap="round"
+                onMouseEnter={() => onHoverSlice?.(i)}
+                onMouseLeave={() => onHoverSlice?.(null)}
+                className={`transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] cursor-pointer ${
+                  hasActive
+                    ? isThisActive
+                      ? 'opacity-100 drop-shadow-[0_2px_4px_rgba(0,0,0,0.18)]'
+                      : 'opacity-35'
+                    : 'opacity-100 hover:opacity-90'
+                }`}
               />
-              <Line isAnimationActive={false}
-                type="monotone"
-                dataKey="actual"
-                name="Actual %"
-                stroke={SERIES.s2}
-                strokeWidth={2}
-                dot={{ r: 4, strokeWidth: 2, stroke: '#fff', fill: SERIES.s2 }}
-                activeDot={{ r: 6 }}
-                label={lastPointLabel(last, SERIES.s2)}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </Section>
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-5">
-          <Section title="Monthly Efficiency" subtitle="Actual / planned progress each month · 100% = on plan">
-            <div className="h-60 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={monthwise} margin={{ top: 18, right: 8, left: -16, bottom: 4 }}>
-                  <CartesianGrid stroke={GRID} vertical={false} />
-                  <XAxis dataKey="month" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: GRID }} />
-                  <YAxis tick={AXIS_TICK} tickFormatter={(v) => `${v}%`} domain={[0, 100]} tickLine={false} axisLine={false} />
-                  <Tooltip formatter={(v) => [`${v}%`, 'Efficiency']} contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#F1F5F9' }} />
-                  <ReferenceLine y={100} stroke="#94A3B8" strokeDasharray="4 4" />
-                  <Bar isAnimationActive={false} dataKey="efficiency" name="Efficiency" fill="#475569" radius={[4, 4, 0, 0]} maxBarSize={28}>
-                    <LabelList dataKey="efficiency" position="top" formatter={(v) => `${v}%`} style={LABEL_TEXT} />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </Section>
-        </div>
-        <div className="lg:col-span-7">
-          <Section title="Monthwise Progress — Table">
-            <div className="overflow-x-auto -mx-5">
-              <table className="min-w-full text-sm">
-                <thead className="bg-slate-50 border-y border-slate-200">
-                  <tr>
-                    <Th className="pl-5">Metric</Th>
-                    {monthwise.map((m) => (
-                      <Th key={m.month} className="text-right">
-                        {m.month}
-                      </Th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 font-mono tabular-nums">
-                  <tr>
-                    <td className="pl-5 pr-3 py-2.5 font-sans font-semibold text-slate-800">
-                      <LegendSwatch color={SERIES.s1} label="Planned %" />
-                    </td>
-                    {monthwise.map((m) => (
-                      <td key={m.month} className="px-3 py-2.5 text-right">
-                        {pct(m.planned)}
-                      </td>
-                    ))}
-                  </tr>
-                  <tr>
-                    <td className="pl-5 pr-3 py-2.5 font-sans font-semibold text-slate-800">
-                      <LegendSwatch color={SERIES.s2} label="Actual %" />
-                    </td>
-                    {monthwise.map((m) => (
-                      <td key={m.month} className="px-3 py-2.5 text-right">
-                        {pct(m.actual)}
-                      </td>
-                    ))}
-                  </tr>
-                  <tr>
-                    <td className="pl-5 pr-3 py-2.5 font-sans font-semibold text-slate-700">Efficiency</td>
-                    {monthwise.map((m) => (
-                      <td key={m.month} className={`px-3 py-2.5 text-right font-semibold ${efficiencyClass(`${m.efficiency}%`)}`}>
-                        {m.efficiency}%
-                      </td>
-                    ))}
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </Section>
-        </div>
-      </div>
-
-      <Section
-        title="Monthly Progress — Building-wise"
-        subtitle="Monthly actual progress (%) of each building's own scope — grouped, since each building has a different base"
-      >
-        <div className="h-80 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={buildingWiseMonthly} margin={{ top: 18, right: 8, left: -8, bottom: 4 }} barGap={2} barCategoryGap="22%">
-              <CartesianGrid stroke={GRID} vertical={false} />
-              <XAxis dataKey="month" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: GRID }} />
-              <YAxis tick={AXIS_TICK} tickFormatter={(v) => `${v}%`} tickLine={false} axisLine={false} />
-              <Tooltip formatter={(v, n) => [pct(v), n]} contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#F1F5F9' }} />
-              <Legend wrapperStyle={{ fontSize: 12 }} iconType="square" />
-              <Bar isAnimationActive={false} dataKey="aBldg" name="A Bldg." fill={SERIES.s1} radius={[4, 4, 0, 0]} maxBarSize={22} />
-              <Bar isAnimationActive={false} dataKey="bBldg" name="B Bldg." fill={SERIES.s2} radius={[4, 4, 0, 0]} maxBarSize={22} />
-              <Bar isAnimationActive={false} dataKey="dev" name="Dev." fill={SERIES.s3} radius={[4, 4, 0, 0]} maxBarSize={22} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="overflow-x-auto -mx-5">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 border-y border-slate-200">
-              <tr>
-                <Th className="pl-5">Building</Th>
-                {buildingWiseMonthly.map((m) => (
-                  <Th key={m.month} className="text-right">
-                    {m.month}
-                  </Th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 font-mono tabular-nums">
-              {(
-                [
-                  ['aBldg', 'A Bldg.', SERIES.s1],
-                  ['bBldg', 'B Bldg.', SERIES.s2],
-                  ['dev', 'Dev.', SERIES.s3],
-                ] as const
-              ).map(([key, label, color]) => (
-                <tr key={key}>
-                  <td className="pl-5 pr-3 py-2.5 font-sans font-semibold">
-                    <LegendSwatch color={color} label={label} />
-                  </td>
-                  {buildingWiseMonthly.map((m) => (
-                    <td key={m.month} className="px-3 py-2.5 text-right">
-                      {pct(m[key])}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Section>
-    </div>
-  );
-}
-
-function FyActualCost() {
-  const { fyActualCostUptoOct } = ELENOR_DATA;
-  return (
-    <div>
-      <p className="text-xs font-semibold text-slate-700 mb-2">Actual Cost (Cr.) for FY upto October-26</p>
-      <div className="grid grid-cols-3 gap-2 sm:gap-3">
-        {[
-          { label: 'A Bldg', value: fyActualCostUptoOct.aBldg, swatch: SERIES.s1 },
-          { label: 'B Bldg', value: fyActualCostUptoOct.bBldg, swatch: SERIES.s2 },
-          { label: 'Development', value: fyActualCostUptoOct.development, swatch: SERIES.s3 },
-        ].map((c) => (
-          <div key={c.label} className="min-w-0 rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2.5">
-            <LegendSwatch color={c.swatch} label={c.label} />
-            <p className="mt-1 font-mono text-base font-semibold text-slate-900 tabular-nums whitespace-nowrap">₹{c.value} Cr</p>
-          </div>
-        ))}
+            );
+          })}
+      </svg>
+      <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center px-1 transition-all duration-150">
+        <span className="font-mono text-sm font-bold text-slate-900 leading-tight">
+          {displayCenterText}
+        </span>
+        <span className="text-[10px] font-medium text-slate-500 leading-tight truncate max-w-[76px]">
+          {displayCenterSub}
+        </span>
       </div>
     </div>
   );
 }
 
-/* ---------------------------------- Target vs Actual ---------------------------------- */
+function getKpiDonutData(label: string, building: ElenorBuilding = 'all', valueStr?: string): KpiDonutData | null {
+  const normalized = label.toLowerCase();
 
-function TargetTable({ title, rows }: { title: string; rows: ElenorTargetRow[] }) {
-  return (
-    <Section title={title} subtitle="3rd Quarter : October – December 2026">
-      <div className="overflow-x-auto -mx-5">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 border-y border-slate-200">
-            <tr>
-              <Th className="pl-5">Activity</Th>
-              <Th>Target – Oct 2026</Th>
-              <Th>Status – Oct 2026</Th>
-              <Th>Target – Nov 2026</Th>
-              <Th className="pr-5">Target – Dec 2026</Th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {rows.map((r) => (
-              <tr key={r.activity}>
-                <td className="pl-5 pr-3 py-2.5 font-semibold text-slate-900 whitespace-nowrap">{r.activity}</td>
-                <td className="px-3 py-2.5 text-slate-700">{r.targetOct}</td>
-                <td className="px-3 py-2.5">
-                  {r.status ? (
-                    <div className={`inline-flex flex-col rounded-md border px-2.5 py-1 ${TARGET_STATUS_CLASS[r.status]}`}>
-                      <span className="text-xs font-semibold">{r.statusOct}</span>
-                      <span className="text-[10px] font-medium uppercase tracking-wide opacity-80">{r.status}</span>
-                    </div>
-                  ) : (
-                    <span className="text-slate-500">{r.statusOct}</span>
-                  )}
-                </td>
-                <td className="px-3 py-2.5 text-slate-700">{r.targetNov}</td>
-                <td className="pl-3 pr-5 py-2.5 text-slate-700">{r.targetDec}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Section>
-  );
-}
-
-function TargetsTab() {
-  const { targetVsActual } = ELENOR_DATA;
-  const all = [...targetVsActual.A, ...targetVsActual.B, ...targetVsActual.Development];
-  const count = (rows: ElenorTargetRow[], s: TargetStatus) => rows.filter((r) => r.status === s).length;
-  const statuses = ['Achieved', 'Partly Done', 'Failed'] as const;
-  const chartRows = (
-    [
-      ['A Bldg.', targetVsActual.A],
-      ['B Bldg.', targetVsActual.B],
-      ['Development', targetVsActual.Development],
-    ] as const
-  ).map(([name, rows]) => ({
-    name,
-    Achieved: count(rows, 'Achieved'),
-    'Partly Done': count(rows, 'Partly Done'),
-    Failed: count(rows, 'Failed'),
-  }));
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-5 grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-1 gap-4">
-          {statuses.map((s) => (
-            <div key={s} className="rounded-xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-4">
-              <div>
-                <p className="text-xs font-medium text-slate-500">October 2026 activities</p>
-                <p className={`mt-1 inline-flex rounded-md border px-2 py-0.5 text-sm font-semibold ${TARGET_STATUS_CLASS[s]}`}>{s}</p>
-              </div>
-              <span className="font-mono text-2xl font-semibold text-slate-900 tabular-nums">{count(all, s)}</span>
-            </div>
-          ))}
-        </div>
-        <div className="lg:col-span-7">
-          <Section title="October Status by Building" subtitle="Count of activities with an October status">
-            <div className="h-52 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartRows} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 4 }} barCategoryGap="28%">
-                  <CartesianGrid stroke={GRID} horizontal={false} />
-                  <XAxis type="number" allowDecimals={false} tick={AXIS_TICK} tickLine={false} axisLine={false} />
-                  <YAxis type="category" dataKey="name" tick={AXIS_TICK} width={86} tickLine={false} axisLine={false} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#F1F5F9' }} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} iconType="square" />
-                  {statuses.map((s, i) => (
-                    <Bar isAnimationActive={false}
-                      key={s}
-                      dataKey={s}
-                      stackId="status"
-                      fill={TARGET_STATUS_FILL[s]}
-                      stroke="#fff"
-                      strokeWidth={2}
-                      radius={i === statuses.length - 1 ? [0, 4, 4, 0] : 0}
-                    >
-                      <LabelList
-                        dataKey={s}
-                        position="center"
-                        formatter={(v) => (Number(v) > 0 ? String(v) : '')}
-                        style={{ fontSize: 11, fill: '#fff', fontWeight: 700 }}
-                      />
-                    </Bar>
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </Section>
-        </div>
-      </div>
-      <TargetTable title="A Building — Target vs Actual" rows={targetVsActual.A} />
-      <TargetTable title="B Building — Target vs Actual" rows={targetVsActual.B} />
-      <TargetTable title="Development — Target vs Actual" rows={targetVsActual.Development} />
-    </div>
-  );
-}
-
-/* ---------------------------------- Aluform & Highrise ---------------------------------- */
-
-function CastingTable({ title, rows, color }: { title: string; rows: ElenorCastingRow[]; color: string }) {
-  const { totalFloors } = ELENOR_DATA.aluformCasting;
-  const cast = rows.length;
-  return (
-    <Section title={title} subtitle={`${cast} of ${totalFloors} Aluform floors cast · 8th–32nd floor pending`}>
-      <div className="h-2 rounded-full bg-slate-100 overflow-hidden" role="img" aria-label={`${cast} of ${totalFloors} floors cast`}>
-        <div className="h-full rounded-full" style={{ width: `${(cast / totalFloors) * 100}%`, backgroundColor: color }} />
-      </div>
-      <div className="overflow-x-auto -mx-5">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 border-y border-slate-200">
-            <tr>
-              <Th className="pl-5">Floor</Th>
-              <Th>Date</Th>
-              <Th className="text-right pr-5">Cycle</Th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {rows.map((r) => (
-              <tr key={r.floor}>
-                <td className="pl-5 pr-3 py-2 font-semibold text-slate-900">{r.floor}</td>
-                <td className="px-3 py-2 font-mono tabular-nums text-slate-800">{r.date ?? <Dash />}</td>
-                <td className="pl-3 pr-5 py-2 text-right font-mono tabular-nums font-semibold text-slate-900">{r.cycle ?? <Dash />}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Section>
-  );
-}
-
-function AluformTab() {
-  const { aluformCasting, highriseStatus, asOfDate } = ELENOR_DATA;
-
-  const toPoints = (rows: ElenorCastingRow[]) =>
-    rows
-      .filter((r) => r.date)
-      .map((r) => ({ t: parseDmy(r.date as string), floor: parseInt(r.floor, 10), cycle: r.cycle }))
-      .sort((a, b) => a.t - b.t);
-  const aPoints = toPoints(aluformCasting.A);
-  const bPoints = toPoints(aluformCasting.B);
-  const strikeStart = new Date(2026, 3, 16).getTime();
-  const strikeEnd = new Date(2026, 4, 8).getTime();
-  const allT = [...aPoints, ...bPoints].map((p) => p.t);
-  const minT = Math.min(...allT, strikeStart) - 7 * 86400000;
-  const maxT = Math.max(...allT) + 7 * 86400000;
-  const monthTicks: number[] = [];
-  for (let d = new Date(new Date(minT).getFullYear(), new Date(minT).getMonth() + 1, 1); d.getTime() <= maxT; d.setMonth(d.getMonth() + 1)) {
-    monthTicks.push(d.getTime());
+  // 1. PROGRESS
+  if (normalized.includes('progress')) {
+    if (building === 'A') {
+      return {
+        title: 'A Building Progress',
+        centerText: '8.53%',
+        centerSub: 'Actual',
+        slices: [
+          { name: 'Completed Progress', value: 8.53, color: '#2a78d6', formatted: '8.53%' },
+          { name: 'Schedule Lag Gap', value: 5.38, color: '#d97706', formatted: '5.38%' },
+          { name: 'Remaining Baseline', value: 86.09, color: '#e2e8f0', formatted: '86.09%' },
+        ],
+        footerNote: 'Target: 13.91% · 5.38% behind planned schedule',
+      };
+    }
+    if (building === 'B') {
+      return {
+        title: 'B Building Progress',
+        centerText: '9.14%',
+        centerSub: 'Actual',
+        slices: [
+          { name: 'Completed Progress', value: 9.14, color: '#2a78d6', formatted: '9.14%' },
+          { name: 'Schedule Lag Gap', value: 5.34, color: '#d97706', formatted: '5.34%' },
+          { name: 'Remaining Baseline', value: 85.52, color: '#e2e8f0', formatted: '85.52%' },
+        ],
+        footerNote: 'Target: 14.48% · 5.34% behind planned schedule',
+      };
+    }
+    if (building === 'Development') {
+      return {
+        title: 'Development Progress',
+        centerText: '13.76%',
+        centerSub: 'Actual',
+        slices: [
+          { name: 'Completed Progress', value: 13.76, color: '#2a78d6', formatted: '13.76%' },
+          { name: 'Schedule Lag Gap', value: 2.57, color: '#94a3b8', formatted: '2.57%' },
+          { name: 'Remaining Baseline', value: 83.67, color: '#e2e8f0', formatted: '83.67%' },
+        ],
+        footerNote: 'Target: 16.33% · Podium & external development',
+      };
+    }
+    // Project All
+    return {
+      title: 'Overall Project Progress',
+      centerText: '9.92%',
+      centerSub: 'Overall',
+      slices: [
+        { name: 'Achieved Progress', value: 9.92, color: '#2a78d6', formatted: '9.92%' },
+        { name: 'Schedule Lag Gap', value: 5.72, color: '#d97706', formatted: '5.72%' },
+        { name: 'Remaining Baseline', value: 84.36, color: '#e2e8f0', formatted: '84.36%' },
+      ],
+      footerNote: 'Cumulative actual 9.92% vs Planned 15.64%',
+    };
   }
 
-  const cycleData = aluformCasting.A.map((a, i) => ({
-    floor: a.floor.replace(' Floor', ''),
-    A: a.cycle ? parseInt(a.cycle, 10) : null,
-    B: aluformCasting.B[i]?.cycle ? parseInt(aluformCasting.B[i].cycle as string, 10) : null,
-  }))
-    .filter((r) => r.A !== null || r.B !== null)
-    .reverse();
+  // 2. SPENT
+  if (normalized.includes('spent')) {
+    if (building === 'A') {
+      return {
+        title: 'A Building Cost Breakdown',
+        centerText: '₹11.90 Cr',
+        centerSub: 'Spent',
+        slices: [
+          { name: 'RCC (Aluform)', value: 10.49, color: '#2a78d6', formatted: '₹10.49 Cr' },
+          { name: 'Earthwork', value: 0.89, color: '#38bdf8', formatted: '₹0.89 Cr' },
+          { name: 'Masonry & Plaster', value: 0.30, color: '#64748b', formatted: '₹0.30 Cr' },
+          { name: 'Services & Others', value: 0.22, color: '#94a3b8', formatted: '₹0.22 Cr' },
+        ],
+        footerNote: 'Planned: ₹19.40 Cr · Cumulative spend efficiency 61%',
+      };
+    }
+    if (building === 'B') {
+      return {
+        title: 'B Building Cost Breakdown',
+        centerText: '₹12.96 Cr',
+        centerSub: 'Spent',
+        slices: [
+          { name: 'RCC (Aluform)', value: 11.65, color: '#2a78d6', formatted: '₹11.65 Cr' },
+          { name: 'Earthwork', value: 0.77, color: '#38bdf8', formatted: '₹0.77 Cr' },
+          { name: 'Masonry & Plaster', value: 0.29, color: '#64748b', formatted: '₹0.29 Cr' },
+          { name: 'Services & Others', value: 0.25, color: '#94a3b8', formatted: '₹0.25 Cr' },
+        ],
+        footerNote: 'Planned: ₹20.53 Cr · Cumulative spend efficiency 63%',
+      };
+    }
+    if (building === 'Development') {
+      return {
+        title: 'Development Cost Breakdown',
+        centerText: '₹7.75 Cr',
+        centerSub: 'Spent',
+        slices: [
+          { name: 'Podium Civil', value: 3.74, color: '#2a78d6', formatted: '₹3.74 Cr' },
+          { name: 'Retaining Wall', value: 1.87, color: '#38bdf8', formatted: '₹1.87 Cr' },
+          { name: 'UGWT & Pump Room', value: 1.23, color: '#64748b', formatted: '₹1.23 Cr' },
+          { name: 'Earthwork & Misc', value: 0.91, color: '#94a3b8', formatted: '₹0.91 Cr' },
+        ],
+        footerNote: 'Planned: ₹9.20 Cr · Spend efficiency 84%',
+      };
+    }
+    // Project All
+    return {
+      title: 'Total Project Spend Distribution',
+      centerText: '₹36.83 Cr',
+      centerSub: 'Spent',
+      slices: [
+        { name: 'A Building', value: 11.90, color: '#2a78d6', formatted: '₹11.90 Cr' },
+        { name: 'B Building', value: 12.96, color: '#38bdf8', formatted: '₹12.96 Cr' },
+        { name: 'Development & Podium', value: 7.75, color: '#64748b', formatted: '₹7.75 Cr' },
+        { name: 'Site Ops & Overheads', value: 4.22, color: '#94a3b8', formatted: '₹4.22 Cr' },
+      ],
+      footerNote: 'Total spent ₹36.83 Cr of ₹58.06 Cr planned upto date',
+    };
+  }
 
-  return (
-    <div className="space-y-6">
-      <Section
-        title="Aluform Floor Casting — Floors vs Date"
-        subtitle="Each point is a floor cast; a steeper line means a faster cycle. Shaded: RMC strike (16/04/26 – 08/05/26)."
-      >
-        <div className="h-80 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart margin={{ top: 16, right: 24, left: -12, bottom: 4 }}>
-              <CartesianGrid stroke={GRID} />
-              <XAxis
-                type="number"
-                dataKey="t"
-                domain={[minT, maxT]}
-                ticks={monthTicks}
-                tickFormatter={(t) => new Date(t).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })}
-                tick={AXIS_TICK}
-                tickLine={false}
-                axisLine={{ stroke: GRID }}
-              />
-              <YAxis
-                type="number"
-                dataKey="floor"
-                domain={[0, 8]}
-                allowDecimals={false}
-                tickCount={9}
-                tick={AXIS_TICK}
-                tickLine={false}
-                axisLine={false}
-                label={{ value: 'Floor', angle: -90, position: 'insideLeft', offset: 20, style: { fontSize: 11, fill: '#64748B' } }}
-              />
-              <ReferenceArea
-                x1={strikeStart}
-                x2={strikeEnd}
-                fill="#FDE68A"
-                fillOpacity={0.45}
-                label={{ value: 'RMC strike', position: 'insideTop', fontSize: 10, fill: '#92400E' }}
-              />
-              <Tooltip
-                contentStyle={TOOLTIP_STYLE}
-                labelFormatter={(t) => formatShortDate(Number(t))}
-                formatter={(v, n) => [`Floor ${v}`, n]}
-              />
-              <Legend wrapperStyle={{ fontSize: 12 }} iconType="circle" />
-              <Line isAnimationActive={false} data={aPoints} dataKey="floor" name="A Bldg." stroke={SERIES.s1} strokeWidth={2} dot={{ r: 4, fill: SERIES.s1, stroke: '#fff', strokeWidth: 2 }} activeDot={{ r: 6 }} />
-              <Line isAnimationActive={false} data={bPoints} dataKey="floor" name="B Bldg." stroke={SERIES.s2} strokeWidth={2} dot={{ r: 4, fill: SERIES.s2, stroke: '#fff', strokeWidth: 2 }} activeDot={{ r: 6 }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">
-          <span className="font-semibold">Note:</span> {aluformCasting.note}
-        </div>
-      </Section>
+  // 3. EFFICIENCY
+  if (normalized.includes('efficiency')) {
+    const effPct = building === 'A' ? 61 : building === 'B' ? 63 : building === 'Development' ? 84 : 63;
+    const effColor = effPct >= 80 ? '#16a34a' : effPct >= 60 ? '#2a78d6' : '#d97706';
+    return {
+      title: `${building === 'all' ? 'Project' : building} Spend Efficiency`,
+      centerText: `${effPct}%`,
+      centerSub: 'Efficiency',
+      slices: [
+        { name: 'Earned Value Realised', value: effPct, color: effColor, formatted: `${effPct}%` },
+        { name: 'Schedule/Cost Variance', value: 100 - effPct, color: '#e2e8f0', formatted: `${100 - effPct}%` },
+      ],
+      footerNote: 'Formula: Actual Cost ÷ Planned Target Cost (EV Index)',
+    };
+  }
 
-      <Section title="Aluform Floor Cycle (days)" subtitle="Days between consecutive floor casts">
-        <div className="h-64 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={cycleData} margin={{ top: 18, right: 16, left: -12, bottom: 4 }} barGap={2} barCategoryGap="24%">
-              <CartesianGrid stroke={GRID} vertical={false} />
-              <XAxis dataKey="floor" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: GRID }} />
-              <YAxis tick={AXIS_TICK} allowDecimals={false} tickLine={false} axisLine={false} />
-              <Tooltip formatter={(v, n) => [`${v} days`, n]} contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#F1F5F9' }} />
-              <Legend wrapperStyle={{ fontSize: 12 }} iconType="square" />
-              <Bar isAnimationActive={false} dataKey="A" name="A Bldg." fill={SERIES.s1} radius={[4, 4, 0, 0]} maxBarSize={24}>
-                <LabelList dataKey="A" position="top" style={LABEL_TEXT} />
-              </Bar>
-              <Bar isAnimationActive={false} dataKey="B" name="B Bldg." fill={SERIES.s2} radius={[4, 4, 0, 0]} maxBarSize={24}>
-                <LabelList dataKey="B" position="top" style={LABEL_TEXT} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </Section>
+  // 4. BUDGET
+  if (normalized.includes('budget')) {
+    if (building === 'A') {
+      return {
+        title: 'A Building Baseline Allocation',
+        centerText: '₹139.5 Cr',
+        centerSub: 'Budget',
+        slices: [
+          { name: 'RCC (Structure)', value: 33.71, color: '#2a78d6', formatted: '₹33.71 Cr' },
+          { name: 'Tiling & Flooring', value: 23.90, color: '#38bdf8', formatted: '₹23.90 Cr' },
+          { name: 'Flat Amenities', value: 18.67, color: '#64748b', formatted: '₹18.67 Cr' },
+          { name: 'Plaster & Masonry', value: 11.34, color: '#94a3b8', formatted: '₹11.34 Cr' },
+          { name: 'Other Packages', value: 51.85, color: '#cbd5e1', formatted: '₹51.85 Cr' },
+        ],
+        footerNote: 'Total baseline ₹13,947 Lacs (signed off)',
+      };
+    }
+    if (building === 'B') {
+      return {
+        title: 'B Building Baseline Allocation',
+        centerText: '₹141.8 Cr',
+        centerSub: 'Budget',
+        slices: [
+          { name: 'RCC (Structure)', value: 33.81, color: '#2a78d6', formatted: '₹33.81 Cr' },
+          { name: 'Tiling & Flooring', value: 24.13, color: '#38bdf8', formatted: '₹24.13 Cr' },
+          { name: 'Flat Amenities', value: 18.87, color: '#64748b', formatted: '₹18.87 Cr' },
+          { name: 'Plaster & Masonry', value: 11.70, color: '#94a3b8', formatted: '₹11.70 Cr' },
+          { name: 'Other Packages', value: 53.26, color: '#cbd5e1', formatted: '₹53.26 Cr' },
+        ],
+        footerNote: 'Total baseline ₹14,177 Lacs (signed off)',
+      };
+    }
+    if (building === 'Development') {
+      return {
+        title: 'Development Baseline Allocation',
+        centerText: '₹56.3 Cr',
+        centerSub: 'Budget',
+        slices: [
+          { name: 'Podium Structure', value: 19.13, color: '#2a78d6', formatted: '₹19.13 Cr' },
+          { name: 'Stack Parking', value: 8.52, color: '#38bdf8', formatted: '₹8.52 Cr' },
+          { name: 'LT Room & MEP', value: 6.85, color: '#64748b', formatted: '₹6.85 Cr' },
+          { name: 'Elevational & Facade', value: 4.66, color: '#94a3b8', formatted: '₹4.66 Cr' },
+          { name: 'Amenities & Roads', value: 17.18, color: '#cbd5e1', formatted: '₹17.18 Cr' },
+        ],
+        footerNote: 'Total baseline ₹5,634 Lacs (signed off)',
+      };
+    }
+    // Project All
+    return {
+      title: 'Total Project Baseline Budget',
+      centerText: '₹371.2 Cr',
+      centerSub: 'Budget',
+      slices: [
+        { name: 'A Building', value: 139.47, color: '#2a78d6', formatted: '₹139.47 Cr' },
+        { name: 'B Building', value: 141.77, color: '#38bdf8', formatted: '₹141.77 Cr' },
+        { name: 'Development & Podium', value: 56.34, color: '#64748b', formatted: '₹56.34 Cr' },
+        { name: 'General & Infrastructure', value: 33.64, color: '#94a3b8', formatted: '₹33.64 Cr' },
+      ],
+      footerNote: 'Total approved baseline: ₹371.22 Cr',
+    };
+  }
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <CastingTable title="A Bldg. — Aluform Floor Casting Dates" rows={aluformCasting.A} color={SERIES.s1} />
-        <CastingTable title="B Bldg. — Aluform Floor Casting Dates" rows={aluformCasting.B} color={SERIES.s2} />
-      </div>
+  // 5. FY 26-27 SPEND
+  if (normalized.includes('fy 26-27') || normalized.includes('fy spend') || normalized.includes('fy')) {
+    if (building === 'all') {
+      return {
+        title: 'FY 26-27 Spend by Wing',
+        centerText: '₹18.06 Cr',
+        centerSub: 'FY Spend',
+        slices: [
+          { name: 'A Building', value: 6.82, color: '#2a78d6', formatted: '₹6.82 Cr' },
+          { name: 'B Building', value: 7.21, color: '#38bdf8', formatted: '₹7.21 Cr' },
+          { name: 'Development', value: 4.03, color: '#64748b', formatted: '₹4.03 Cr' },
+        ],
+        footerNote: 'Cumulative FY spend Apr – Oct 2026',
+      };
+    }
+    const fyVal = building === 'A' ? 6.82 : building === 'B' ? 7.21 : 4.03;
+    const projected = building === 'A' ? 4.88 : building === 'B' ? 4.89 : 2.52;
+    return {
+      title: `${building} Bldg FY 26-27 Spend`,
+      centerText: `₹${fyVal} Cr`,
+      centerSub: 'Spent',
+      slices: [
+        { name: 'Apr–Oct Realised', value: fyVal, color: '#2a78d6', formatted: `₹${fyVal} Cr` },
+        { name: 'H2 Target Balance', value: projected, color: '#cbd5e1', formatted: `₹${projected} Cr` },
+      ],
+      footerNote: 'Fiscal Year 2026-27 progress upto October',
+    };
+  }
 
-      <Section title={`Activity-wise Actual vs Highrise Work Status — upto ${asOfDate}`}>
-        <div className="overflow-x-auto -mx-5">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 border-y border-slate-200">
-              <tr>
-                <Th className="pl-5">Activity</Th>
-                <Th>A Bldg. Actual</Th>
-                <Th>A Bldg. Highrise Status</Th>
-                <Th>B Bldg. Actual</Th>
-                <Th className="pr-5">B Bldg. Highrise Status</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {highriseStatus.map((r) => (
-                <tr key={r.activity}>
-                  <td className="pl-5 pr-3 py-2.5 font-semibold text-slate-900 whitespace-nowrap">{r.activity}</td>
-                  <td className="px-3 py-2.5 text-slate-800">{r.aActual}</td>
-                  <td className={`px-3 py-2.5 font-semibold ${r.aTone === 'open' ? 'text-red-700' : 'text-sky-700'}`}>{r.aHighrise}</td>
-                  <td className="px-3 py-2.5 text-slate-800">{r.bActual}</td>
-                  <td className={`pl-3 pr-5 py-2.5 font-semibold ${r.bTone === 'open' ? 'text-red-700' : 'text-sky-700'}`}>{r.bHighrise}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Section>
-    </div>
-  );
+  // 6. ALUFORM (or OCT TARGETS in Development)
+  if (normalized.includes('aluform')) {
+    if (building === 'all') {
+      return {
+        title: 'Aluform Casting Completion',
+        centerText: '23 / 68',
+        centerSub: 'Floors',
+        slices: [
+          { name: 'Wing A Cast', value: 12, color: '#2a78d6', formatted: '12 Floors' },
+          { name: 'Wing B Cast', value: 11, color: '#38bdf8', formatted: '11 Floors' },
+          { name: 'Remaining Slabs', value: 45, color: '#e2e8f0', formatted: '45 Floors' },
+        ],
+        footerNote: '33.8% cast across both 34-storey towers',
+      };
+    }
+    const cast = building === 'A' ? 12 : 11;
+    const remaining = 34 - cast;
+    return {
+      title: `${building} Building Aluform Cycle`,
+      centerText: `${cast} / 34`,
+      centerSub: `${((cast / 34) * 100).toFixed(0)}% Done`,
+      slices: [
+        { name: 'Floors Cast', value: cast, color: '#2a78d6', formatted: `${cast} Floors` },
+        { name: 'Remaining Slabs', value: remaining, color: '#e2e8f0', formatted: `${remaining} Floors` },
+      ],
+      footerNote: `Avg cycle: ${building === 'A' ? '12.4' : '13.1'} days per floor`,
+    };
+  }
+
+  if (normalized.includes('target')) {
+    return {
+      title: 'October Targets Status',
+      centerText: '2 / 10',
+      centerSub: 'Met',
+      slices: [
+        { name: 'Achieved', value: 2, color: '#16a34a', formatted: '2 Met' },
+        { name: 'Partly Done', value: 1, color: '#d97706', formatted: '1 Part' },
+        { name: 'Failed Targets', value: 7, color: '#dc2626', formatted: '7 Failed' },
+      ],
+      footerNote: 'Q3 target milestones for Development',
+    };
+  }
+
+  return null;
 }
 
-/* --------------------------------- Building-wise cost --------------------------------- */
-
-function CostTable({ title, rows }: { title: string; rows: ElenorCostRow[] }) {
-  return (
-    <Section title={title} subtitle="Amounts in ₹ Lacs · up to date">
-      <div className="overflow-x-auto -mx-5">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 border-y border-slate-200">
-            <tr>
-              <Th className="pl-5">Task Name</Th>
-              <Th className="text-right">Baseline Cost (Lacs)</Th>
-              <Th className="text-right">Planned %</Th>
-              <Th className="text-right">Planned Cost</Th>
-              <Th className="text-right">Actual %</Th>
-              <Th className="text-right">Actual Cost</Th>
-              <Th className="text-right pr-5">Efficiency %</Th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {rows.map((r) => {
-              const rowClass = r.level === 'total' ? 'bg-sky-50/70' : r.level === 'group' ? 'bg-amber-50/70' : '';
-              const nameClass =
-                r.level === 'total' ? 'font-semibold text-red-700' : r.level === 'group' ? 'font-semibold text-slate-900' : 'text-slate-800';
-              const cell = (v: string | null, extra = '') => (
-                <td className={`px-3 py-2 text-right font-mono tabular-nums ${extra}`}>{v ?? <Dash />}</td>
-              );
-              return (
-                <tr key={r.name} className={rowClass}>
-                  <td className={`pl-5 pr-3 py-2 ${r.indent ? 'pl-9' : ''} ${nameClass}`}>{r.name}</td>
-                  {cell(r.baseline, 'font-semibold text-slate-900')}
-                  {cell(r.plannedPct, 'text-slate-700')}
-                  {cell(r.plannedCost, 'text-slate-700')}
-                  {cell(r.actualPct, 'text-slate-900')}
-                  {cell(r.actualCost, 'text-slate-900')}
-                  <td className={`pl-3 pr-5 py-2 text-right font-mono tabular-nums font-semibold ${efficiencyClass(r.efficiency)}`}>
-                    {r.efficiency ?? <Dash />}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </Section>
-  );
-}
-
-function shortTaskName(name: string): string {
-  return name.replace(/^\(TG\)\s*/, '').replace(/^[AB]\s*-\s*/, '').trim();
-}
-
-function TaskGroupProgressChart({ bldg }: { bldg: BldgKey }) {
-  const rows = ELENOR_DATA.buildingProgress[bldg]
-    .filter((r) => r.level === 'item' && r.plannedPct !== null && r.actualPct !== null)
-    .map((r) => ({
-      name: shortTaskName(r.name),
-      planned: pctNum(r.plannedPct),
-      actual: pctNum(r.actualPct),
-      efficiency: r.efficiency,
-    }))
-    .sort((a, b) => b.planned - a.planned);
-  const pct = (v: unknown) => `${Number(v ?? 0).toFixed(2)}%`;
-
-  return (
-    <Section
-      title="Planned vs Actual % by Task Group"
-      subtitle="Task groups with progress recorded · % of each task group's baseline"
-    >
-      <div className="w-full" style={{ height: Math.max(220, rows.length * 46 + 60) }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 56, left: 8, bottom: 4 }} barGap={2} barCategoryGap="24%">
-            <CartesianGrid stroke={GRID} horizontal={false} />
-            <XAxis type="number" tick={AXIS_TICK} tickFormatter={(v) => `${v}%`} tickLine={false} axisLine={false} />
-            <YAxis type="category" dataKey="name" tick={AXIS_TICK} width={150} tickLine={false} axisLine={false} />
-            <Tooltip
-              formatter={(v, n) => [pct(v), n]}
-              labelFormatter={(l) => {
-                const row = rows.find((r) => r.name === l);
-                return row?.efficiency ? `${l} · Efficiency ${row.efficiency}` : String(l);
-              }}
-              contentStyle={TOOLTIP_STYLE}
-              cursor={{ fill: '#F1F5F9' }}
-            />
-            <Legend wrapperStyle={{ fontSize: 12 }} iconType="square" />
-            <Bar isAnimationActive={false} dataKey="planned" name="Planned %" fill={SERIES.s1} radius={[0, 4, 4, 0]} maxBarSize={14}>
-              <LabelList dataKey="planned" position="right" formatter={pct} style={{ fontSize: 10, fill: '#475569' }} />
-            </Bar>
-            <Bar isAnimationActive={false} dataKey="actual" name="Actual %" fill={SERIES.s2} radius={[0, 4, 4, 0]} maxBarSize={14}>
-              <LabelList dataKey="actual" position="right" formatter={pct} style={{ fontSize: 10, fill: '#0F172A', fontWeight: 600 }} />
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </Section>
-  );
-}
-
-function CostTab() {
-  const [bldg, setBldg] = useState<BldgKey>('A');
-  const titles: Record<BldgKey, string> = {
-    A: 'Building-wise Progress: A Building',
-    B: 'Building-wise Progress: B Building',
-    Development: 'Building-wise Progress: Development',
-  };
-  return (
-    <div className="space-y-6">
-      <SegmentedToggle options={BLDG_OPTIONS} value={bldg} onChange={setBldg} />
-      <TaskGroupProgressChart bldg={bldg} />
-      <CostTable title={titles[bldg]} rows={ELENOR_DATA.buildingProgress[bldg]} />
-    </div>
-  );
-}
-
-function BaselineCompositionChart() {
-  const [bldg, setBldg] = useState<BldgKey>('A');
-  const rows = ELENOR_DATA.buildingProgress[bldg]
-    .filter((r) => r.level === 'item' && parseFloat(r.baseline) > 0)
-    .map((r) => ({
-      name: shortTaskName(r.name),
-      baseline: parseFloat(r.baseline),
-      label: r.baseline,
-      started: r.actualPct !== null && pctNum(r.actualPct) > 0,
-    }))
-    .sort((a, b) => b.baseline - a.baseline)
-    .slice(0, 12);
-  const totalRow = ELENOR_DATA.buildingProgress[bldg][0];
-
-  return (
-    <Section
-      title="Where the Budget Sits — Baseline by Task Group"
-      subtitle={`Top ${rows.length} task groups · ₹ Lacs · ${bldg === 'Development' ? 'Development' : `${bldg} Building`} total ₹${totalRow.baseline} Lacs`}
-      action={<SegmentedToggle options={BLDG_OPTIONS} value={bldg} onChange={setBldg} />}
-    >
-      <div className="flex gap-4 -mt-1">
-        <LegendSwatch color={SERIES.s1} label="Work started (actual > 0%)" />
-        <LegendSwatch color="#CBD5E1" label="Not started / not recorded" />
-      </div>
-      <div className="w-full" style={{ height: rows.length * 30 + 40 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 72, left: 8, bottom: 4 }} barCategoryGap="22%">
-            <CartesianGrid stroke={GRID} horizontal={false} />
-            <XAxis type="number" tick={AXIS_TICK} tickLine={false} axisLine={false} />
-            <YAxis type="category" dataKey="name" tick={AXIS_TICK} width={190} tickLine={false} axisLine={false} interval={0} />
-            <Tooltip formatter={(v) => [`₹${Number(v).toFixed(2)} Lacs`, 'Baseline']} contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#F1F5F9' }} />
-            <Bar isAnimationActive={false} dataKey="baseline" name="Baseline (Lacs)" radius={[0, 4, 4, 0]} maxBarSize={16}>
-              {rows.map((r) => (
-                <CellFill key={r.name} fill={r.started ? SERIES.s1 : '#CBD5E1'} />
-              ))}
-              <LabelList dataKey="label" position="right" style={{ fontSize: 10, fill: '#334155', fontWeight: 600 }} />
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </Section>
-  );
-}
-
-/* ----------------------------- Purchasing & contractors ----------------------------- */
-
-function ProcurementTab() {
-  const { bulkPurchasing, contractorDeployment } = ELENOR_DATA;
-  return (
-    <div className="space-y-6">
-      <Section
-        title={`Bulk Purchasing — 3rd Quarter (October 2026 – December 2026) · ${bulkPurchasing.ref}`}
-        subtitle="PO processing and lead times in days"
-      >
-        <div className="overflow-x-auto -mx-5">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 border-y border-slate-200">
-              <tr>
-                <Th className="pl-5" />
-                <Th />
-                <Th />
-                <Th />
-                <th colSpan={5} className="px-3 pt-2.5 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-700 border-l border-slate-200">
-                  A Building
-                </th>
-                <th colSpan={5} className="px-3 pt-2.5 pr-5 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-700 border-l border-slate-200">
-                  B Building
-                </th>
-              </tr>
-              <tr>
-                <Th className="pl-5">Sr.</Th>
-                <Th>Contractor</Th>
-                <Th className="text-right">PO Proc.</Th>
-                <Th className="text-right">Lead</Th>
-                <Th className="border-l border-slate-200">Planned</Th>
-                <Th>Req. Date</Th>
-                <Th>Req. Status</Th>
-                <Th>PO Status</Th>
-                <Th>Delivery</Th>
-                <Th className="border-l border-slate-200">Planned</Th>
-                <Th>Req. Date</Th>
-                <Th>Req. Status</Th>
-                <Th>PO Status</Th>
-                <Th className="pr-5">Delivery</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {bulkPurchasing.rows.map((r) => (
-                <tr key={r.sr}>
-                  <td className="pl-5 pr-3 py-2.5 font-mono tabular-nums text-slate-500">{r.sr}</td>
-                  <td className="px-3 py-2.5 font-semibold text-slate-900 whitespace-nowrap">{r.item}</td>
-                  <td className="px-3 py-2.5 text-right font-mono tabular-nums">{r.poProcessing}</td>
-                  <td className="px-3 py-2.5 text-right font-mono tabular-nums">{r.leadTime}</td>
-                  {[r.a, r.b].map((side, i) =>
-                    side ? (
-                      <PurchaseCells key={i} side={side} last={i === 1} />
-                    ) : (
-                      <td key={i} colSpan={5} className={`px-3 py-2.5 text-xs text-slate-400 border-l border-slate-100 ${i === 1 ? 'pr-5' : ''}`}>
-                        Not yet scheduled
-                      </td>
-                    )
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Section>
-
-      <Section
-        title={`Contractor Deployment — 3rd Quarter (October 2026 – December 2026) · ${contractorDeployment.ref}`}
-        subtitle="Processing time in days · WO status w.r.t. Highrise"
-      >
-        <div className="overflow-x-auto -mx-5">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 border-y border-slate-200">
-              <tr>
-                <Th className="pl-5" />
-                <Th />
-                <Th />
-                <th colSpan={4} className="px-3 pt-2.5 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-700 border-l border-slate-200">
-                  A Building
-                </th>
-                <th colSpan={4} className="px-3 pt-2.5 pr-5 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-700 border-l border-slate-200">
-                  B Building
-                </th>
-              </tr>
-              <tr>
-                <Th className="pl-5">Sr.</Th>
-                <Th>Contractor</Th>
-                <Th className="text-right">Proc.</Th>
-                <Th className="border-l border-slate-200">Planned Date</Th>
-                <Th>WO Date</Th>
-                <Th>Labour Req.</Th>
-                <Th>WO Status</Th>
-                <Th className="border-l border-slate-200">Planned Date</Th>
-                <Th>WO Date</Th>
-                <Th>Labour Req.</Th>
-                <Th className="pr-5">WO Status</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {contractorDeployment.rows.map((r) => (
-                <tr key={r.sr}>
-                  <td className="pl-5 pr-3 py-2.5 font-mono tabular-nums text-slate-500">{r.sr}</td>
-                  <td className="px-3 py-2.5 font-semibold text-slate-900 whitespace-nowrap">{r.contractor}</td>
-                  <td className="px-3 py-2.5 text-right font-mono tabular-nums">{r.processing}</td>
-                  {[r.a, r.b].map((side, i) =>
-                    side ? (
-                      <Fragment key={i}>
-                        <td className="px-3 py-2.5 font-mono tabular-nums whitespace-nowrap border-l border-slate-100">{side.planned}</td>
-                        <td className="px-3 py-2.5 font-mono tabular-nums whitespace-nowrap">{side.wo}</td>
-                        <td className={`px-3 py-2.5 whitespace-nowrap ${statusTextClass(side.labour)}`}>{side.labour}</td>
-                        <td className={`px-3 py-2.5 whitespace-nowrap ${i === 1 ? 'pr-5' : ''} ${statusTextClass(side.woStatus)}`}>{side.woStatus}</td>
-                      </Fragment>
-                    ) : (
-                      <td key={i} colSpan={4} className={`px-3 py-2.5 text-xs text-slate-400 border-l border-slate-100 ${i === 1 ? 'pr-5' : ''}`}>
-                        Not yet scheduled
-                      </td>
-                    )
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Section>
-    </div>
-  );
-}
-
-function PurchaseCells({
-  side,
-  last,
+function KpiDonutPopover({
+  kpiLabel,
+  building = 'all',
+  currentValue,
 }: {
-  side: { planned: string; reqDate: string; reqStatus: string; poStatus: string; delivery: string };
-  last: boolean;
+  kpiLabel: string;
+  building?: ElenorBuilding;
+  currentValue: string;
 }) {
-  return (
-    <>
-      <td className="px-3 py-2.5 font-mono tabular-nums whitespace-nowrap border-l border-slate-100">{side.planned}</td>
-      <td className="px-3 py-2.5 font-mono tabular-nums whitespace-nowrap">{side.reqDate}</td>
-      <td className={`px-3 py-2.5 ${statusTextClass(side.reqStatus)}`}>{side.reqStatus}</td>
-      <td className={`px-3 py-2.5 ${statusTextClass(side.poStatus)}`}>{side.poStatus}</td>
-      <td className={`px-3 py-2.5 ${last ? 'pr-5' : ''} ${statusTextClass(side.delivery)}`}>{side.delivery}</td>
-    </>
-  );
-}
+  const [hoveredSlice, setHoveredSlice] = useState<number | null>(null);
+  const data = getKpiDonutData(kpiLabel, building, currentValue);
+  if (!data) return null;
 
-/* ---------------------------------------- Pages ---------------------------------------- */
+  const total = data.slices.reduce((s, it) => s + Math.max(0, it.value), 0);
 
-function PageTitle({ title, showPresenter }: { title: string; showPresenter?: boolean }) {
-  const { reportRef, reportPeriod, presenter, projectInfo } = ELENOR_DATA;
-  const location = projectInfo.find((p) => p.label === 'Location')?.value;
-  const buildings = projectInfo.find((p) => p.label === 'Number of Buildings')?.value;
   return (
-    <div className="flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <h2 className="font-display text-xl font-semibold text-slate-900">{title}</h2>
-        <p className="text-sm text-slate-600 mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span className="inline-flex items-center gap-1">
-            <Building2 className="h-3.5 w-3.5" />
-            Nyati Elenor
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <MapPin className="h-3.5 w-3.5" />
-            {location}
-          </span>
-          <span>{buildings}</span>
-          <span className="inline-flex items-center gap-1">
-            <CalendarDays className="h-3.5 w-3.5" />
-            {reportPeriod}
-          </span>
-        </p>
+    <div className="space-y-3">
+      {/* Popover Header */}
+      <div className="flex items-center justify-between border-b border-slate-100/90 pb-2.5">
+        <div>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">KPI Breakdown</span>
+          <h4 className="text-xs font-bold text-slate-900 tracking-tight">{data.title}</h4>
+        </div>
+        <span className="rounded-lg bg-slate-100/80 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-700 border border-slate-200/50">
+          {data.centerText}
+        </span>
       </div>
-      {showPresenter && (
-        <div className="text-right text-xs text-slate-500">
-          <p className="font-mono">{reportRef}</p>
-          <p>
-            Presented by {presenter.name} ·{' '}
-            <a href={`mailto:${presenter.email}`} className="text-sky-700 hover:underline">
-              {presenter.email}
-            </a>
-          </p>
+
+      {/* Donut Chart with dynamic hover & Apple activity ring styling */}
+      <div className="flex justify-center py-1">
+        <SvgDonut
+          slices={data.slices}
+          centerText={data.centerText}
+          centerSub={data.centerSub}
+          size={116}
+          strokeWidth={15}
+          activeSliceIndex={hoveredSlice}
+          onHoverSlice={setHoveredSlice}
+        />
+      </div>
+
+      {/* Legend & Breakdown List with row hover interactions */}
+      <div className="space-y-0.5 text-[11px]">
+        {data.slices.map((slice, i) => {
+          const isRowHovered = hoveredSlice === i;
+          const share = total > 0 ? ((slice.value / total) * 100).toFixed(0) : '0';
+          return (
+            <div
+              key={slice.name}
+              onMouseEnter={() => setHoveredSlice(i)}
+              onMouseLeave={() => setHoveredSlice(null)}
+              className={`flex items-center justify-between py-1 px-1.5 -mx-1.5 rounded-lg cursor-pointer transition-all duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                isRowHovered
+                  ? 'bg-slate-100/90 shadow-2xs translate-x-0.5'
+                  : hoveredSlice !== null
+                  ? 'opacity-40'
+                  : 'hover:bg-slate-50/80'
+              }`}
+            >
+              <div className="flex items-center gap-2 min-w-0 pr-2">
+                <span
+                  className={`h-2.5 w-2.5 shrink-0 rounded-xs transition-transform duration-200 ${
+                    isRowHovered ? 'scale-125 ring-2 ring-slate-400/30' : ''
+                  }`}
+                  style={{ backgroundColor: slice.color }}
+                />
+                <span className={`truncate ${isRowHovered ? 'font-semibold text-slate-900' : 'text-slate-700'}`}>
+                  {slice.name}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 font-mono tabular-nums shrink-0">
+                <span className={`font-semibold ${isRowHovered ? 'text-slate-950 font-bold' : 'text-slate-900'}`}>
+                  {slice.formatted ?? slice.value}
+                </span>
+                <span className="text-[10px] text-slate-400 font-medium">({share}%)</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Footer Note */}
+      {data.footerNote && (
+        <div className="border-t border-slate-100/90 pt-2 text-[10px] text-slate-400 font-medium leading-relaxed">
+          {data.footerNote}
         </div>
       )}
     </div>
   );
 }
 
-export function ElenorDashboardPage() {
+function StatStrip({
+  items,
+  building = 'all',
+}: {
+  items: Array<{ label: string; value: string; sub?: string; tone?: Tone }>;
+  building?: ElenorBuilding;
+}) {
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const lgCols = items.length === 4 ? 'lg:grid-cols-4 sm:grid-cols-4' : 'lg:grid-cols-6 sm:grid-cols-3';
+
   return (
-    <div className="space-y-6">
-      <PageTitle title="Executive Dashboard" showPresenter />
-      <OverviewTab />
+    <div className={`relative z-20 grid grid-cols-2 ${lgCols} gap-px rounded-2xl border border-slate-200/80 bg-slate-200/60 p-[1px] shadow-[0_1px_3px_rgba(0,0,0,0.03),0_6px_16px_rgba(0,0,0,0.02)]`}>
+      {items.map((it, idx) => {
+        const isHovered = hoveredIdx === idx;
+        const donutData = getKpiDonutData(it.label, building, it.value);
+        const isFirst = idx === 0;
+        const isLast = idx === items.length - 1;
+        const alignClass = isFirst ? 'left-0' : isLast ? 'right-0' : 'left-1/2 -translate-x-1/2';
+        const cornerRounding =
+          isFirst
+            ? 'rounded-tl-2xl rounded-bl-2xl sm:rounded-bl-2xl'
+            : isLast
+            ? 'rounded-tr-2xl rounded-br-2xl sm:rounded-tr-2xl sm:rounded-br-2xl'
+            : '';
+
+        return (
+          <div
+            key={it.label}
+            tabIndex={0}
+            onMouseEnter={() => setHoveredIdx(idx)}
+            onMouseLeave={() => setHoveredIdx(null)}
+            onFocus={() => setHoveredIdx(idx)}
+            onBlur={() => setHoveredIdx(null)}
+            className={`group relative bg-white/95 px-4 py-3.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] cursor-pointer ${cornerRounding} ${
+              isHovered ? 'bg-slate-50/90 shadow-2xs z-30' : 'hover:bg-slate-50/60'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                {it.label}
+              </p>
+              {donutData && (
+                <span
+                  title="Hover to view breakdown donut chart"
+                  className="rounded-full bg-slate-100/80 p-1 text-slate-400 group-hover:bg-blue-50 group-hover:text-blue-600 active:scale-95 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]"
+                >
+                  <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <circle cx="12" cy="12" r="9" />
+                    <circle cx="12" cy="12" r="4" />
+                  </svg>
+                </span>
+              )}
+            </div>
+
+            <p className="mt-1 flex items-center gap-1.5 font-mono text-xl font-semibold tabular-nums text-slate-900 tracking-tight">
+              {it.tone && <Dot color={TONE[it.tone]} />}
+              {it.value}
+            </p>
+            {it.sub && <p className="mt-0.5 text-xs text-slate-500 font-mono tabular-nums">{it.sub}</p>}
+
+            {/* Hover Donut Popover - Apple Glass frosted popover */}
+            {isHovered && donutData && (
+              <div
+                className={`absolute top-full mt-2.5 ${alignClass} z-50 w-76 rounded-2xl border border-slate-200/80 bg-white/95 backdrop-blur-xl p-4 shadow-[0_4px_24px_rgba(0,0,0,0.12),0_1px_4px_rgba(0,0,0,0.05)] ring-1 ring-black/[0.04] transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] animate-in fade-in zoom-in-95`}
+                role="tooltip"
+              >
+                {/* Invisible hover bridge to prevent mouse leaving flicker */}
+                <div className="absolute -top-3.5 left-0 right-0 h-3.5" />
+                <KpiDonutPopover kpiLabel={it.label} building={building} currentValue={it.value} />
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-export function ElenorWorkPackagesPage() {
+/** Bullet: actual fill with a planned tick, on a 0–max track. */
+function Bullet({ actual, planned, max }: { actual: number; planned: number; max: number }) {
   return (
-    <div className="space-y-6">
-      <PageTitle title="Work Packages" />
-      <CostTab />
+    <div className="relative h-2 rounded-full bg-slate-100" role="img" aria-label={`Actual ${actual}%, planned ${planned}%`}>
+      <div
+        className="absolute inset-y-0 left-0 rounded-full"
+        style={{ width: `${Math.min(100, (actual / max) * 100)}%`, backgroundColor: C.actual }}
+      />
+      <div
+        className="absolute -top-1 -bottom-1 w-0.5 rounded-full bg-slate-500"
+        style={{ left: `${Math.min(100, (planned / max) * 100)}%` }}
+      />
     </div>
   );
 }
 
-export function ElenorBudgetPage() {
-  const { uptoDateStatus } = ELENOR_DATA;
-  const chartRows = uptoDateStatus
-    .filter((r) => !r.isTotal)
-    .map((r) => ({
-      name: r.project.replace(' - (B2+B1+G+32)', ''),
-      planned: parseFloat(r.plannedCost),
-      actual: parseFloat(r.actualCost),
-    }));
-  const cr = (v: unknown) => `₹${Number(v ?? 0).toFixed(2)} Cr`;
+/* ================================== Shared charts ================================== */
+
+function MonthTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: ReadonlyArray<{ payload?: unknown }>;
+  label?: unknown;
+}) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0].payload as (typeof D.monthwise)[number];
+  return (
+    <div style={TIP} className="bg-white px-3 py-2">
+      <p className="text-xs font-semibold text-slate-900 mb-1">{String(label)}</p>
+      <p className="text-xs text-slate-600 font-mono tabular-nums">Planned {row.planned.toFixed(2)}%</p>
+      <p className="text-xs text-slate-900 font-mono tabular-nums font-semibold">Actual {row.actual.toFixed(2)}%</p>
+      <p className="text-xs text-slate-600 font-mono tabular-nums">Efficiency {row.efficiency}%</p>
+    </div>
+  );
+}
+
+function lastLabel(lastIndex: number, suffix = '%') {
+  return (props: { x?: number | string; y?: number | string; index?: number; value?: unknown }) => {
+    if (props.index !== lastIndex || props.x === undefined || props.y === undefined) return null;
+    return (
+      <text x={Number(props.x) + 8} y={Number(props.y) + 4} fontSize={11} fontWeight={600} fill="#0F172A">
+        {Number(props.value).toFixed(2)}
+        {suffix}
+      </text>
+    );
+  };
+}
+
+function ProjectMonthlyChart() {
+  const [chartView, setChartView] = useState<'progress' | 'scurve' | 'spend'>('progress');
+  const last = D.monthwise.length - 1;
+  const fy = D.statusSummary[1];
+  const baselineCr = 371.22;
+
+  // Compute cumulative Earned Value S-curve dataset
+  const sCurveData = D.monthwise.reduce((acc, m, i) => {
+    const plannedSpend = Number(((m.planned / 100) * baselineCr).toFixed(2));
+    const actualSpend = Number(((m.actual / 100) * baselineCr).toFixed(2));
+    const prevCumPlanned = i > 0 ? acc[i - 1].cumPlanned : 0;
+    const prevCumActual = i > 0 ? acc[i - 1].cumActual : 0;
+    const prevCumPlannedPct = i > 0 ? acc[i - 1].cumPlannedPct : 0;
+    const prevCumActualPct = i > 0 ? acc[i - 1].cumActualPct : 0;
+    acc.push({
+      month: m.month,
+      plannedPct: m.planned,
+      actualPct: m.actual,
+      efficiency: m.efficiency,
+      plannedSpend,
+      actualSpend,
+      cumPlanned: Number((prevCumPlanned + plannedSpend).toFixed(2)),
+      cumActual: Number((prevCumActual + actualSpend).toFixed(2)),
+      cumPlannedPct: Number((prevCumPlannedPct + m.planned).toFixed(2)),
+      cumActualPct: Number((prevCumActualPct + m.actual).toFixed(2)),
+    });
+    return acc;
+  }, [] as Array<{
+    month: string;
+    plannedPct: number;
+    actualPct: number;
+    efficiency: number;
+    plannedSpend: number;
+    actualSpend: number;
+    cumPlanned: number;
+    cumActual: number;
+    cumPlannedPct: number;
+    cumActualPct: number;
+  }>);
 
   return (
-    <div className="space-y-6">
-      <PageTitle title="Budget & BOQ" />
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {uptoDateStatus.map((r) => (
-          <Kpi
-            key={r.project}
-            label={r.isTotal ? 'Total Cost — Nyati Elenor' : `Total Cost — ${r.project.replace(' - (B2+B1+G+32)', '')}`}
-            value={`₹${r.totalCost} Cr`}
-            sub={`Actual ₹${r.actualCost} Cr · Effi. ${r.efficiency}`}
-          />
-        ))}
-      </div>
-      <UptoDateStatusTable />
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-5">
-          <Section title="Planned vs Actual Cost — Upto Date" subtitle="By building · ₹ Crore">
-            <div className="h-72 w-full">
+    <Card
+      title={
+        chartView === 'scurve'
+          ? 'Earned Value S-Curve'
+          : chartView === 'spend'
+          ? 'Monthly Spend'
+          : 'Monthly Progress'
+      }
+      hint={
+        chartView === 'scurve'
+          ? 'Cumulative planned vs actual spend · ₹ Crore'
+          : chartView === 'spend'
+          ? 'FY 2026-27 monthly spend · ₹ Crore'
+          : 'FY 2026-27 · % of project'
+      }
+      action={
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
+            <button
+              type="button"
+              onClick={() => setChartView('progress')}
+              className={`rounded-lg px-3 py-1.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+                chartView === 'progress'
+                  ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Progress %
+            </button>
+            <button
+              type="button"
+              onClick={() => setChartView('scurve')}
+              className={`rounded-lg px-3 py-1.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+                chartView === 'scurve'
+                  ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              S-Curve (₹ Cr)
+            </button>
+            <button
+              type="button"
+              onClick={() => setChartView('spend')}
+              className={`rounded-lg px-3 py-1.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+                chartView === 'spend'
+                  ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Spend (₹ Cr)
+            </button>
+          </div>
+          <div className="hidden sm:flex gap-3">
+            <Swatch color={C.actual} label="Actual" />
+            <Swatch color={C.plan} label="Planned" dashed />
+          </div>
+        </div>
+      }
+    >
+      {chartView === 'progress' && (
+        <>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={D.monthwise} margin={{ top: 8, right: 52, left: -16, bottom: 0 }}>
+                <CartesianGrid stroke={C.grid} vertical={false} />
+                <XAxis dataKey="month" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: C.grid }} />
+                <YAxis tick={AXIS_TICK} tickFormatter={(v) => `${v}%`} domain={[0, 1.6]} tickLine={false} axisLine={false} />
+                <Tooltip content={MonthTooltip} cursor={{ stroke: '#94A3B8', strokeDasharray: '3 3' }} />
+                <Line
+                  isAnimationActive={false}
+                  dataKey="planned"
+                  name="Planned"
+                  stroke={C.plan}
+                  strokeWidth={2}
+                  strokeDasharray="5 4"
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                  label={lastLabel(last)}
+                />
+                <Line
+                  isAnimationActive={false}
+                  dataKey="actual"
+                  name="Actual"
+                  stroke={C.actual}
+                  strokeWidth={2}
+                  dot={{ r: 3.5, fill: C.actual, stroke: '#fff', strokeWidth: 2 }}
+                  activeDot={{ r: 5 }}
+                  label={lastLabel(last)}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          {/* Efficiency strip — same horizontal frame as the chart above so months line up. */}
+          <div className="flex items-center border-t border-slate-100 pt-1">
+            <span className="w-0 shrink-0 overflow-visible whitespace-nowrap text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Effi.
+            </span>
+            <div className="h-12 flex-1">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartRows} margin={{ top: 18, right: 8, left: -8, bottom: 4 }} barGap={2} barCategoryGap="26%">
-                  <CartesianGrid stroke={GRID} vertical={false} />
-                  <XAxis dataKey="name" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: GRID }} />
-                  <YAxis tick={AXIS_TICK} tickLine={false} axisLine={false} />
-                  <Tooltip formatter={(v, n) => [cr(v), n]} contentStyle={TOOLTIP_STYLE} cursor={{ fill: '#F1F5F9' }} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} iconType="square" />
-                  <Bar isAnimationActive={false} dataKey="planned" name="Planned Cost" fill={SERIES.s1} radius={[4, 4, 0, 0]} maxBarSize={40}>
-                    <LabelList dataKey="planned" position="top" style={LABEL_TEXT} formatter={(v) => Number(v ?? 0).toFixed(2)} />
-                  </Bar>
-                  <Bar isAnimationActive={false} dataKey="actual" name="Actual Cost" fill={SERIES.s2} radius={[4, 4, 0, 0]} maxBarSize={40}>
-                    <LabelList dataKey="actual" position="top" style={LABEL_TEXT} formatter={(v) => Number(v ?? 0).toFixed(2)} />
-                  </Bar>
-                </BarChart>
+                <LineChart data={D.monthwise} margin={{ top: 16, right: 52, left: -16, bottom: 0 }}>
+                  <XAxis dataKey="month" hide />
+                  <YAxis domain={[0, 100]} tick={false} tickLine={false} axisLine={false} />
+                  <Line
+                    isAnimationActive={false}
+                    dataKey="efficiency"
+                    stroke={C.context}
+                    strokeWidth={1.5}
+                    dot={(p: { cx?: number; cy?: number; payload?: { efficiency: number }; index?: number }) => (
+                      <circle key={p.index} cx={p.cx} cy={p.cy} r={3} fill={TONE[effTone(p.payload?.efficiency ?? null)]} stroke="#fff" strokeWidth={1.5} />
+                    )}
+                  >
+                    <LabelList dataKey="efficiency" position="top" formatter={(v) => `${v}%`} style={{ fontSize: 10, fill: '#475569', fontWeight: 600 }} />
+                  </Line>
+                </LineChart>
               </ResponsiveContainer>
             </div>
-            <FyActualCost />
-          </Section>
+          </div>
+        </>
+      )}
+
+      {chartView === 'scurve' && (
+        <div className="h-76">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={sCurveData} margin={{ top: 12, right: 52, left: -8, bottom: 0 }}>
+              <defs>
+                <linearGradient id="scurveActualGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={C.actual} stopOpacity={0.25} />
+                  <stop offset="95%" stopColor={C.actual} stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke={C.grid} vertical={false} />
+              <XAxis dataKey="month" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: C.grid }} />
+              <YAxis tick={AXIS_TICK} tickFormatter={(v) => `₹${v} Cr`} domain={[0, 30]} tickLine={false} axisLine={false} />
+              <Tooltip
+                content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0].payload as (typeof sCurveData)[number];
+                  return (
+                    <div style={TIP}>
+                      <div className="font-semibold text-slate-900">{d.month} · Cumulative Earned Value</div>
+                      <div className="mt-1.5 space-y-1 text-xs">
+                        <div className="flex justify-between gap-4">
+                          <span className="text-slate-500">Planned Value (PV):</span>
+                          <span className="font-mono font-semibold text-slate-800">₹{d.cumPlanned} Cr ({d.cumPlannedPct}%)</span>
+                        </div>
+                        <div className="flex justify-between gap-4">
+                          <span className="text-slate-500">Earned Value (EV):</span>
+                          <span className="font-mono font-semibold text-sky-700">₹{d.cumActual} Cr ({d.cumActualPct}%)</span>
+                        </div>
+                        <div className="flex justify-between gap-4 border-t border-slate-100 pt-1 text-amber-700">
+                          <span>Schedule Variance:</span>
+                          <span className="font-mono font-semibold">-₹{(d.cumPlanned - d.cumActual).toFixed(2)} Cr</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }}
+              />
+              <Area
+                isAnimationActive={false}
+                type="monotone"
+                dataKey="cumActual"
+                name="Actual Spend"
+                stroke={C.actual}
+                strokeWidth={2.5}
+                fill="url(#scurveActualGrad)"
+                dot={{ r: 3.5, fill: C.actual, stroke: '#fff', strokeWidth: 2 }}
+                activeDot={{ r: 5 }}
+              />
+              <Line
+                isAnimationActive={false}
+                type="monotone"
+                dataKey="cumPlanned"
+                name="Planned Spend"
+                stroke={C.plan}
+                strokeWidth={2}
+                strokeDasharray="5 4"
+                dot={false}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
-        <div className="lg:col-span-7">
-          <BaselineCompositionChart />
+      )}
+
+      {chartView === 'spend' && (
+        <div className="h-76">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={sCurveData} margin={{ top: 12, right: 30, left: -8, bottom: 0 }} barCategoryGap="25%">
+              <CartesianGrid stroke={C.grid} vertical={false} />
+              <XAxis dataKey="month" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: C.grid }} />
+              <YAxis tick={AXIS_TICK} tickFormatter={(v) => `₹${v} Cr`} domain={[0, 6]} tickLine={false} axisLine={false} />
+              <Tooltip
+                content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0].payload as (typeof sCurveData)[number];
+                  return (
+                    <div style={TIP}>
+                      <div className="font-semibold text-slate-900">{d.month} · Monthly Expenditure</div>
+                      <div className="mt-1.5 space-y-1 text-xs">
+                        <div className="flex justify-between gap-4">
+                          <span className="text-slate-500">Planned Cost:</span>
+                          <span className="font-mono font-semibold text-slate-800">₹{d.plannedSpend} Cr</span>
+                        </div>
+                        <div className="flex justify-between gap-4">
+                          <span className="text-slate-500">Actual Cost:</span>
+                          <span className="font-mono font-semibold text-sky-700">₹{d.actualSpend} Cr</span>
+                        </div>
+                        <div className="flex justify-between gap-4 border-t border-slate-100 pt-1 text-slate-600">
+                          <span>Monthly Efficiency:</span>
+                          <span className="font-mono font-semibold">{d.efficiency}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }}
+              />
+              <Bar isAnimationActive={false} dataKey="plannedSpend" name="Planned" fill={C.context} radius={[3, 3, 0, 0]} />
+              <Bar isAnimationActive={false} dataKey="actualSpend" name="Actual" fill={C.actual} radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      <p className="mt-2 border-t border-slate-100 pt-2 text-xs text-slate-600">
+        FY to Oct · actual <span className="font-mono font-semibold text-slate-900">{fy.actualPct}</span> ({fy.actualCost}) vs plan{' '}
+        <span className="font-mono font-semibold text-slate-900">{fy.plannedPct}</span> ({fy.plannedCost}) · cumulative variance{' '}
+        <span className="font-mono font-semibold text-amber-800">-₹11.77 Cr</span>
+      </p>
+    </Card>
+  );
+}
+
+function BuildingMonthlyChart({ b }: { b: Bldg }) {
+  const info = bldgInfo(b);
+  const data = D.buildingWiseMonthly.map((m) => ({ month: m.month, v: m[info.monthKey] }));
+  const last = data.length - 1;
+  return (
+    <Card title="Monthly progress" hint={`% of ${info.label} · FY spend ₹${info.fyCost} Cr`}>
+      <div className="h-56">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} margin={{ top: 18, right: 4, left: -18, bottom: 0 }} barCategoryGap="30%">
+            <CartesianGrid stroke={C.grid} vertical={false} />
+            <XAxis dataKey="month" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: C.grid }} />
+            <YAxis tick={AXIS_TICK} tickFormatter={(v) => `${v}%`} tickLine={false} axisLine={false} />
+            <Tooltip formatter={(v) => [`${Number(v).toFixed(2)}%`, 'Actual']} contentStyle={TIP} cursor={{ fill: '#F1F5F9' }} />
+            <Bar isAnimationActive={false} dataKey="v" fill={C.actual} radius={[4, 4, 0, 0]} maxBarSize={26}>
+              <LabelList
+                dataKey="v"
+                position="top"
+                content={(p) =>
+                  p.index === last ? (
+                    <text x={Number(p.x) + Number(p.width) / 2} y={Number(p.y) - 6} textAnchor="middle" fontSize={11} fontWeight={600} fill="#0F172A">
+                      {Number(p.value).toFixed(2)}%
+                    </text>
+                  ) : null
+                }
+              />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </Card>
+  );
+}
+
+/* ================================== Project overview ================================== */
+
+const MONTH_NAMES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+/** Months since project start (Dec 2024 = 0) for labels like "JUNE 2025". */
+function monthOffset(label: string): number {
+  const [m, y] = label.trim().split(/\s+/);
+  return (Number(y) - 2024) * 12 + MONTH_NAMES.indexOf(m.slice(0, 3).toUpperCase()) - 11;
+}
+
+/** One bar for the whole schedule: time elapsed, planned and actual work on the same 0–100% scale. */
+function ScheduleBar() {
+  const { timeline, uptoDateStatus } = D;
+  const total = uptoDateStatus[0];
+  const T = timeline.totalMonths;
+  const timePct = (timeline.elapsedMonths / T) * 100;
+  const plan = num(total.plannedPct);
+  const act = num(total.actualPct);
+  const pos = (offset: number) => `${Math.max(0, Math.min(100, (offset / T) * 100))}%`;
+  const years = [2026, 2027, 2028, 2029].map((y) => ({ y, off: (y - 2024) * 12 - 11 }));
+  const milestones = timeline.milestones.map((m) => ({ ...m, off: monthOffset(m.date) + 0.5 }));
+  const [hover, setHover] = useState<number | null>(null);
+  const shown = milestones[hover ?? milestones.length - 1];
+  const stripes = 'repeating-linear-gradient(135deg, #E2E8F0 0 6px, #F8FAFC 6px 12px)';
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+        <div className="flex items-baseline gap-2">
+          <h3 className="font-display text-sm font-semibold text-slate-900">Schedule</h3>
+          <span className="text-xs text-slate-500">
+            {shortMonth(timeline.start)} → {shortMonth(timeline.finish)} · {T - timeline.elapsedMonths} months left
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-600">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-4 rounded-sm" style={{ background: `linear-gradient(90deg, #6aa6ea, ${C.actual})` }} />
+            Actual <span className="font-mono font-semibold text-slate-900">{total.actualPct}</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-4 rounded-sm" style={{ backgroundColor: C.plan }} />
+            Planned <span className="font-mono font-semibold text-slate-900">{total.plannedPct}</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-4 rounded-sm border border-slate-200" style={{ background: stripes }} />
+            Time <span className="font-mono font-semibold text-slate-900">{Math.round(timePct)}%</span>
+          </span>
+        </div>
+      </div>
+
+      <div className="relative mt-3 pt-6">
+        {/* Today pin */}
+        <div className="pointer-events-none absolute top-0 z-10 flex h-[46px] -translate-x-1/2 flex-col items-center" style={{ left: `${timePct}%` }}>
+          <span className="whitespace-nowrap rounded bg-[#0F1E36] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-white">
+            {shortMonth(timeline.current)}
+          </span>
+          <span className="w-px flex-1 bg-[#0F1E36]" />
+        </div>
+
+        <div
+          className="relative h-5 overflow-hidden rounded-full bg-slate-100 ring-1 ring-inset ring-slate-200"
+          role="img"
+          aria-label={`Time elapsed ${Math.round(timePct)}%, planned ${total.plannedPct}, actual ${total.actualPct}`}
+        >
+          <div className="absolute inset-y-0 left-0" style={{ width: `${timePct}%`, background: stripes }} />
+          <div className="absolute inset-y-0 left-0 rounded-r-full" style={{ width: `${plan}%`, backgroundColor: C.plan }} />
+          <div
+            className="absolute inset-y-0 left-0 rounded-r-full shadow-[2px_0_0_0_#fff]"
+            style={{ width: `${act}%`, background: `linear-gradient(90deg, #6aa6ea, ${C.actual})` }}
+          />
+        </div>
+
+        {/* Milestones */}
+        <div className="relative mt-1.5 h-4">
+          {milestones.map((m, i) => (
+            <button
+              key={m.date + m.event}
+              type="button"
+              onMouseEnter={() => setHover(i)}
+              onMouseLeave={() => setHover(null)}
+              onFocus={() => setHover(i)}
+              onBlur={() => setHover(null)}
+              aria-label={`${m.date}: ${m.event}`}
+              className="absolute top-0 flex h-4 w-4 -translate-x-1/2 items-center justify-center"
+              style={{ left: pos(m.off) }}
+            >
+              <span className={`block h-2 w-2 rotate-45 ${hover === i ? 'bg-[#0F1E36]' : 'bg-slate-500'}`} />
+            </button>
+          ))}
+        </div>
+
+        {/* Axis */}
+        <div className="relative h-4 font-mono text-[10px] text-slate-400">
+          <span className="absolute left-0">{shortMonth(timeline.start)}</span>
+          {years.map((y) => (
+            <span key={y.y} className="absolute hidden -translate-x-1/2 sm:inline" style={{ left: pos(y.off) }}>
+              {y.y}
+            </span>
+          ))}
+          <span className="absolute right-0">{shortMonth(timeline.finish)}</span>
+        </div>
+      </div>
+
+      <p className="mt-2 text-xs text-slate-600">
+        <span className="mr-1.5 inline-block h-2 w-2 rotate-45 bg-slate-500" />
+        <span className="font-mono text-slate-500">{shortMonth(shown.date)}</span> · {shown.event}
+        {hover === null && <span className="text-slate-400"> · latest of {milestones.length} milestones</span>}
+      </p>
+    </section>
+  );
+}
+
+/** Spend vs plan per building (₹ Cr, upto date). */
+function SpendByBuildingChart() {
+  const data = BLDGS.map((b) => {
+    const u = bldgInfo(b).upto;
+    return { name: b === 'Development' ? 'Dev.' : `${b} Bldg.`, planned: num(u.plannedCost), actual: num(u.actualCost), budget: u.totalCost };
+  });
+  const cr = (v: unknown) => Number(v ?? 0).toFixed(2);
+  return (
+    <Card
+      title="Spend vs plan"
+      hint="₹ Cr · upto date"
+      action={
+        <div className="flex gap-3">
+          <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+            <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: C.plan }} /> Planned
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+            <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: C.actual }} /> Actual
+          </span>
+        </div>
+      }
+    >
+      <div className="h-72">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} margin={{ top: 18, right: 4, left: -18, bottom: 0 }} barGap={2} barCategoryGap="28%">
+            <CartesianGrid stroke={C.grid} vertical={false} />
+            <XAxis
+              dataKey="name"
+              tickLine={false}
+              axisLine={{ stroke: C.grid }}
+              height={36}
+              tick={(p: { x?: number | string; y?: number | string; payload?: { value?: unknown } }) => {
+                const row = data.find((d) => d.name === p.payload?.value);
+                return (
+                  <g transform={`translate(${p.x},${p.y})`}>
+                    <text dy={12} textAnchor="middle" fontSize={11} fill="#475569">
+                      {String(p.payload?.value)}
+                    </text>
+                    <text dy={26} textAnchor="middle" fontSize={10} fill="#94A3B8">
+                      of ₹{row?.budget}
+                    </text>
+                  </g>
+                );
+              }}
+            />
+            <YAxis tick={AXIS_TICK} tickLine={false} axisLine={false} />
+            <Tooltip formatter={(v, n) => [`₹${cr(v)} Cr`, n]} contentStyle={TIP} cursor={{ fill: '#F1F5F9' }} />
+            <Bar isAnimationActive={false} dataKey="planned" name="Planned" fill={C.plan} radius={[4, 4, 0, 0]} maxBarSize={28}>
+              <LabelList dataKey="planned" position="top" formatter={cr} style={{ fontSize: 10, fill: '#64748B' }} />
+            </Bar>
+            <Bar isAnimationActive={false} dataKey="actual" name="Actual" fill={C.actual} radius={[4, 4, 0, 0]} maxBarSize={28}>
+              <LabelList dataKey="actual" position="top" formatter={cr} style={{ fontSize: 10, fill: '#0F172A', fontWeight: 600 }} />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </Card>
+  );
+}
+
+function BuildingCard({ b, onSelect }: { b: Bldg; onSelect: (b: Bldg) => void }) {
+  const info = bldgInfo(b);
+  const t = targetCounts(info.targets);
+  const spark = D.buildingWiseMonthly.map((m) => ({ month: m.month, v: m[info.monthKey] }));
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(b)}
+      className="group flex flex-col justify-start text-left rounded-2xl border border-slate-200/80 bg-white/90 backdrop-blur-md p-4 sm:p-5 shadow-[0_1px_3px_rgba(0,0,0,0.03),0_6px_16px_rgba(0,0,0,0.02)] hover:border-slate-300 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] active:scale-[0.99] transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-display text-sm font-semibold text-slate-900">{info.label}</p>
+        <span className="inline-flex items-center gap-1 text-xs text-slate-500 font-mono">
+          ₹{info.upto.totalCost} Cr
+          <ArrowUpRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-slate-900" />
+        </span>
+      </div>
+      <div className="mt-3 flex items-baseline gap-2">
+        <span className="font-mono text-2xl font-semibold tabular-nums text-slate-900">{info.upto.actualPct}</span>
+        <span className="text-xs text-slate-500 font-mono">plan {info.upto.plannedPct}</span>
+        <span className="ml-auto">
+          <Effi value={info.upto.efficiency} />
+        </span>
+      </div>
+      <div className="mt-2.5">
+        <Bullet actual={num(info.upto.actualPct)} planned={num(info.upto.plannedPct)} max={20} />
+      </div>
+      <div className="mt-4 h-12 -mx-1">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={spark} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
+            <Tooltip
+              formatter={(v) => [`${Number(v).toFixed(2)}%`, 'Actual']}
+              contentStyle={TIP}
+              cursor={{ stroke: '#94A3B8', strokeDasharray: '3 3' }}
+            />
+            <XAxis dataKey="month" hide />
+            <Area
+              isAnimationActive={false}
+              dataKey="v"
+              stroke={C.actual}
+              strokeWidth={2}
+              fill={C.actual}
+              fillOpacity={0.08}
+              dot={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="text-[11px] text-slate-400">Monthly actual · Apr–Oct 26</p>
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 pt-3 text-xs text-slate-600">
+        <span>
+          Spent <span className="font-mono font-semibold text-slate-900">₹{info.upto.actualCost}</span> of ₹{info.upto.plannedCost} Cr plan
+        </span>
+        <span>
+          FY <span className="font-mono font-semibold text-slate-900">₹{info.fyCost} Cr</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5" title={`October targets: ${t.met} achieved, ${t.partly} partly done, ${t.failed} failed`}>
+          Oct targets
+          {([['good', t.met], ['part', t.partly], ['bad', t.failed]] as const).map(([tone, n]) => (
+            <span key={tone} className="inline-flex items-center gap-0.5 font-mono font-semibold text-slate-900">
+              <ToneIcon tone={tone} className="h-3.5 w-3.5" />
+              {n}
+            </span>
+          ))}
+        </span>
+        {info.cast && (
+          <span>
+            Aluform <span className="font-mono font-semibold text-slate-900">{info.floorsCast}/{D.aluformCasting.totalFloors}</span> floors
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function RiskDrawer({ onClose }: { onClose: () => void }) {
+  const [severityFilter, setSeverityFilter] = useState<'All' | ElenorRiskSeverity>('All');
+  const [categoryFilter, setCategoryFilter] = useState<string>('All');
+  const [search, setSearch] = useState('');
+  const allRisks = computeElenorRisks();
+
+  const categories = ['All', ...Array.from(new Set(allRisks.map((r) => r.category)))];
+  const highCount = allRisks.filter((r) => r.severity === 'High').length;
+  const medCount = allRisks.filter((r) => r.severity === 'Medium').length;
+  const lowCount = allRisks.filter((r) => r.severity === 'Low').length;
+
+  const filtered = allRisks.filter((r) => {
+    if (severityFilter !== 'All' && r.severity !== severityFilter) return false;
+    if (categoryFilter !== 'All' && r.category !== categoryFilter) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      return (
+        r.title.toLowerCase().includes(q) ||
+        r.scope.toLowerCase().includes(q) ||
+        r.reason.toLowerCase().includes(q) ||
+        r.suggestedNextStep.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/30 backdrop-blur-md transition-opacity duration-300 animate-in fade-in">
+      <div className="relative flex h-full w-full max-w-2xl flex-col bg-white/95 backdrop-blur-xl border-l border-slate-200/80 shadow-[0_0_50px_rgba(0,0,0,0.15)] sm:rounded-l-3xl overflow-hidden transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-slate-200/80 px-6 py-4.5 bg-white/80 backdrop-blur-md">
+          <div>
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="h-5 w-5 text-red-600" />
+              <h2 className="font-display text-lg font-bold tracking-tight text-slate-900">Risk Register</h2>
+              <span className="rounded-full bg-slate-100/90 px-2.5 py-0.5 text-xs font-semibold text-slate-700 border border-slate-200/60">
+                {allRisks.length} Total
+              </span>
+            </div>
+            <p className="mt-0.5 text-xs text-slate-500">Derived strictly from PLN/407 figures & Highrise ERP statuses</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full p-2 text-slate-400 bg-slate-100/80 hover:bg-slate-200/80 hover:text-slate-700 active:scale-95 transition-all duration-150"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Filter Controls */}
+        <div className="border-b border-slate-200/80 bg-slate-50/60 p-4 space-y-3">
+          {/* Severity Counters */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSeverityFilter('All')}
+              className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+                severityFilter === 'All'
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-white border border-slate-200/90 text-slate-700 hover:bg-slate-100/80'
+              }`}
+            >
+              All ({allRisks.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSeverityFilter('High')}
+              className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+                severityFilter === 'High'
+                  ? 'bg-red-600 text-white shadow-xs'
+                  : 'bg-white border border-red-200 text-red-700 hover:bg-red-50'
+              }`}
+            >
+              High ({highCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSeverityFilter('Medium')}
+              className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+                severityFilter === 'Medium'
+                  ? 'bg-amber-600 text-white shadow-xs'
+                  : 'bg-white border border-amber-200 text-amber-800 hover:bg-amber-50'
+              }`}
+            >
+              Medium ({medCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSeverityFilter('Low')}
+              className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+                severityFilter === 'Low'
+                  ? 'bg-slate-600 text-white shadow-xs'
+                  : 'bg-white border border-slate-200/90 text-slate-600 hover:bg-slate-100/80'
+              }`}
+            >
+              Low ({lowCount})
+            </button>
+          </div>
+
+          {/* Search & Category Filter */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search risks, trades, or scopes..."
+                className="w-full rounded-xl border border-slate-200/90 bg-white/90 pl-8 pr-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/50 focus:outline-none transition-all shadow-2xs"
+              />
+            </div>
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className="rounded-xl border border-slate-200/90 bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-700 focus:border-slate-900 focus:outline-none transition-all shadow-2xs"
+            >
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  Category: {c}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Scrollable Risk Cards List */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
+          {filtered.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center text-xs text-slate-500">
+              No risks found matching the selected filters.
+            </div>
+          ) : (
+            filtered.map((r) => {
+              const sevBadge =
+                r.severity === 'High'
+                  ? 'bg-red-50 text-red-700 border-red-200'
+                  : r.severity === 'Medium'
+                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                  : 'bg-slate-100 text-slate-700 border-slate-200';
+              return (
+                <div key={r.id} className="rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-[0_1px_3px_rgba(0,0,0,0.03),0_6px_16px_rgba(0,0,0,0.02)] hover:border-slate-300 hover:shadow-xs transition-all duration-200">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`rounded-md border px-2 py-0.5 text-[11px] font-bold ${sevBadge}`}>
+                        {r.severity}
+                      </span>
+                      <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                        {r.category}
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-semibold text-slate-500">{r.scope}</span>
+                  </div>
+                  <h4 className="mt-2 text-sm font-semibold tracking-tight text-slate-900">{r.title}</h4>
+                  <p className="mt-1 text-xs text-slate-600 leading-relaxed">{r.reason}</p>
+                  <div className="mt-2.5 rounded-xl border border-slate-100 bg-slate-50/80 p-2.5 text-xs text-slate-700">
+                    <span className="font-semibold text-slate-900">Next Step: </span>
+                    {r.suggestedNextStep}
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-export function ElenorProgressPage() {
-  const [tab, setTab] = useState<ProgressTabId>(() => {
-    try {
-      const fromUrl = new URLSearchParams(window.location.search).get('tab');
-      if (PROGRESS_TABS.some((t) => t.id === fromUrl)) return fromUrl as ProgressTabId;
-    } catch {
-      // ignore
-    }
-    return 'monthly';
-  });
+function AttentionCard() {
+  const [openDrawer, setOpenDrawer] = useState(false);
+  const all = BLDGS.flatMap((b) => D.targetVsActual[b]);
+  const t = targetCounts(all);
+  const deliveries = D.bulkPurchasing.rows.flatMap((r) =>
+    (['a', 'b'] as const).filter((s) => r[s]?.delivery === 'Not Done').map((s) => `${r.item} ${s.toUpperCase()}`)
+  );
+  const labour = D.contractorDeployment.rows.flatMap((r) =>
+    (['a', 'b'] as const).filter((s) => r[s]?.labour === 'Not Given').map((s) => `${r.contractor} ${s.toUpperCase()}`)
+  );
+  const risks = computeElenorRisks();
+  const items: Array<{ value: string; label: string; sub: string; tone: Tone }> = [
+    { value: `${t.failed}/${t.total}`, label: 'Oct targets missed', sub: `${t.met} met · ${t.partly} partly`, tone: 'bad' },
+    {
+      value: D.taskClosing.openTaskCount.replace(' Nos.', ''),
+      label: 'Open Highrise tasks',
+      sub: `₹${D.taskClosing.openTaskAmount} · ${D.taskClosing.closedInMonth.replace(' Nos', '')} closed in Oct`,
+      tone: 'part',
+    },
+    { value: String(deliveries.length), label: 'Deliveries pending', sub: deliveries.join(' · '), tone: 'bad' },
+    { value: String(labour.length), label: 'Labour not given', sub: labour.join(' · '), tone: 'bad' },
+    {
+      value: `${D.aluformCasting.strike.days} d`,
+      label: 'Lost to RMC strike',
+      sub: `${D.aluformCasting.strike.from.slice(0, 5)} – ${D.aluformCasting.strike.to.slice(0, 5)}`,
+      tone: 'part',
+    },
+    {
+      value: String(risks.filter((r) => r.severity === 'High').length),
+      label: 'High risks',
+      sub: `${risks.length} in register · ${risks.filter((r) => r.severity === 'Medium').length} medium`,
+      tone: 'bad',
+    },
+  ];
   return (
-    <div className="space-y-6">
-      <PageTitle title="Progress Monitoring" />
-      <div role="tablist" aria-label="Progress sections" className="no-print flex gap-1 overflow-x-auto border-b border-slate-200">
-        {PROGRESS_TABS.map((t) => (
+    <>
+      <Card
+        title="Needs attention"
+        action={
           <button
-            key={t.id}
             type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
-            className={`px-3.5 py-2 text-[13px] font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${
-              tab === t.id ? 'border-[#0F1E36] text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800'
+            onClick={() => setOpenDrawer(true)}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200/90 bg-white/90 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 active:scale-[0.97] transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] shadow-xs cursor-pointer"
+          >
+            <ShieldAlert className="h-3.5 w-3.5 text-red-600" />
+            <span>View All 37 Risks</span>
+            <ArrowUpRight className="h-3.5 w-3.5 text-slate-400" />
+          </button>
+        }
+      >
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-6 gap-y-5">
+          {items.map((it) => (
+            <div key={it.label} className="min-w-0">
+              <p className="flex items-center gap-1.5 font-mono text-xl font-semibold tabular-nums text-slate-900">
+                <ToneIcon tone={it.tone} />
+                {it.value}
+              </p>
+              <p className="mt-0.5 text-xs font-medium text-slate-700">{it.label}</p>
+              <p className="text-[11px] text-slate-500 truncate" title={it.sub}>
+                {it.sub}
+              </p>
+            </div>
+          ))}
+        </div>
+      </Card>
+      {openDrawer && <RiskDrawer onClose={() => setOpenDrawer(false)} />}
+    </>
+  );
+}
+
+type PipelineStageKey = 'active' | 'mobilising' | 'action' | 'future';
+
+function getContractorStage(
+  trade: { planned: string; wo: string; labour: string; woStatus: string } | null
+): PipelineStageKey {
+  if (!trade) return 'future';
+  if (trade.labour === 'Not Given' || trade.woStatus === '-') return 'action';
+  if (trade.labour === 'Given' && trade.woStatus === 'Completed') return 'active';
+  return 'mobilising';
+}
+
+function getMaterialStage(
+  mat: { planned: string; reqDate: string; reqStatus: string; poStatus: string; delivery: string } | null
+): PipelineStageKey {
+  if (!mat) return 'future';
+  if (mat.delivery === 'Not Done' || mat.reqStatus === 'Not Given') return 'action';
+  if (mat.delivery === 'Done') return 'active';
+  return 'mobilising';
+}
+
+function StagePill({
+  label,
+  value,
+  status,
+}: {
+  label: string;
+  value: string;
+  status: 'good' | 'part' | 'bad' | 'none';
+}) {
+  const styles = {
+    good: 'bg-emerald-50 text-emerald-800 border-emerald-200/60',
+    part: 'bg-amber-50 text-amber-800 border-amber-200/60',
+    bad: 'bg-rose-50 text-rose-800 border-rose-200/60',
+    none: 'bg-slate-50 text-slate-400 border-slate-200/60',
+  };
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors ${styles[status]}`}
+      title={`${label}: ${value}`}
+    >
+      <span className="text-[9px] uppercase tracking-wider text-slate-500 font-normal">{label}:</span>
+      <span className="font-semibold truncate max-w-[85px]">{value}</span>
+    </span>
+  );
+}
+
+function getStatusTone(val: string): 'good' | 'part' | 'bad' | 'none' {
+  if (!val || val === '-' || val === 'Not scheduled') return 'none';
+  const lower = val.toLowerCase();
+  if (lower === 'not given' || lower === 'not done' || lower.includes('fail')) return 'bad';
+  if (lower.includes('part') || lower.includes('sample')) return 'part';
+  if (lower === 'given' || lower === 'completed' || lower === 'done') return 'good';
+  return 'none';
+}
+
+function CrossWingProcurementMatrix() {
+  const [tab, setTab] = useState<'contractors' | 'materials'>('contractors');
+  const [filterStage, setFilterStage] = useState<'all' | PipelineStageKey>('all');
+  const [search, setSearch] = useState('');
+
+  // Calculate funnel counts for contractors
+  const contractorCounts = useMemo(() => {
+    let active = 0;
+    let mobilising = 0;
+    let action = 0;
+    let future = 0;
+
+    D.contractorDeployment.rows.forEach((r) => {
+      const stageA = getContractorStage(r.a);
+      const stageB = getContractorStage(r.b);
+
+      if (stageA === 'action' || stageB === 'action') {
+        action++;
+      } else if (stageA === 'active' && stageB === 'active') {
+        active++;
+      } else if (stageA === 'mobilising' || stageB === 'mobilising') {
+        mobilising++;
+      } else {
+        future++;
+      }
+    });
+
+    return { active, mobilising, action, future };
+  }, []);
+
+  // Calculate funnel counts for materials
+  const materialCounts = useMemo(() => {
+    let active = 0;
+    let mobilising = 0;
+    let action = 0;
+    let future = 0;
+
+    D.bulkPurchasing.rows.forEach((r) => {
+      const stageA = getMaterialStage(r.a);
+      const stageB = getMaterialStage(r.b);
+
+      if (stageA === 'action' || stageB === 'action') {
+        action++;
+      } else if (stageA === 'active' && stageB === 'active') {
+        active++;
+      } else if (stageA === 'mobilising' || stageB === 'mobilising') {
+        mobilising++;
+      } else {
+        future++;
+      }
+    });
+
+    return { active, mobilising, action, future };
+  }, []);
+
+  const counts = tab === 'contractors' ? contractorCounts : materialCounts;
+
+  // Filtered contractor rows
+  const filteredContractors = useMemo(() => {
+    return D.contractorDeployment.rows.filter((r) => {
+      const stageA = getContractorStage(r.a);
+      const stageB = getContractorStage(r.b);
+      const combinedStage: PipelineStageKey =
+        stageA === 'action' || stageB === 'action'
+          ? 'action'
+          : stageA === 'active' && stageB === 'active'
+          ? 'active'
+          : stageA === 'mobilising' || stageB === 'mobilising'
+          ? 'mobilising'
+          : 'future';
+
+      if (filterStage !== 'all' && combinedStage !== filterStage) return false;
+      if (search.trim() && !r.contractor.toLowerCase().includes(search.toLowerCase())) return false;
+      return true;
+    });
+  }, [filterStage, search]);
+
+  // Filtered material rows
+  const filteredMaterials = useMemo(() => {
+    return D.bulkPurchasing.rows.filter((r) => {
+      const stageA = getMaterialStage(r.a);
+      const stageB = getMaterialStage(r.b);
+      const combinedStage: PipelineStageKey =
+        stageA === 'action' || stageB === 'action'
+          ? 'action'
+          : stageA === 'active' && stageB === 'active'
+          ? 'active'
+          : stageA === 'mobilising' || stageB === 'mobilising'
+          ? 'mobilising'
+          : 'future';
+
+      if (filterStage !== 'all' && combinedStage !== filterStage) return false;
+      if (search.trim() && !r.item.toLowerCase().includes(search.toLowerCase())) return false;
+      return true;
+    });
+  }, [filterStage, search]);
+
+  return (
+    <Card
+      title="Supply & Contractors · Cross-Wing Readiness Heatmap"
+      hint="Procurement pipeline & contractor deployment across Wing A and Wing B · PLN/409 & PLN/410"
+      action={
+        <div className="inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
+          <button
+            type="button"
+            onClick={() => {
+              setTab('contractors');
+              setFilterStage('all');
+            }}
+            className={`rounded-lg px-3 py-1.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+              tab === 'contractors'
+                ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
+                : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            {t.label}
+            Contractor Deployment (PLN/410)
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              setTab('materials');
+              setFilterStage('all');
+            }}
+            className={`rounded-lg px-3 py-1.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+              tab === 'materials'
+                ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            Bulk Materials (PLN/409)
+          </button>
+        </div>
+      }
+    >
+      {/* 4 Pipeline Funnel Cards - Restrained, executive-grade palette */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-3.5">
+        <button
+          type="button"
+          onClick={() => setFilterStage(filterStage === 'active' ? 'all' : 'active')}
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+            filterStage === 'active'
+              ? 'border-emerald-600/80 bg-emerald-50/70 ring-2 ring-emerald-500/20 shadow-xs'
+              : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Active on Site</span>
+            <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          </div>
+          <div className="mt-1 text-lg font-bold font-mono text-slate-900">{counts.active} Trades</div>
+          <div className="text-[10px] text-slate-500">Fully deployed & WO done</div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilterStage(filterStage === 'mobilising' ? 'all' : 'mobilising')}
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+            filterStage === 'mobilising'
+              ? 'border-amber-600/80 bg-amber-50/70 ring-2 ring-amber-500/20 shadow-xs'
+              : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">In Progress / Transit</span>
+            <span className="h-2 w-2 rounded-full bg-amber-500" />
+          </div>
+          <div className="mt-1 text-lg font-bold font-mono text-slate-900">{counts.mobilising} Trades</div>
+          <div className="text-[10px] text-slate-500">Part given / Part done</div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilterStage(filterStage === 'action' ? 'all' : 'action')}
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+            filterStage === 'action'
+              ? 'border-rose-600/80 bg-rose-50/70 ring-2 ring-rose-500/20 shadow-xs'
+              : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Action Needed</span>
+            <span className="h-2 w-2 rounded-full bg-rose-500" />
+          </div>
+          <div className="mt-1 text-lg font-bold font-mono text-rose-700">{counts.action} Trades</div>
+          <div className="text-[10px] text-slate-500">Requisition / PO overdue</div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilterStage(filterStage === 'future' ? 'all' : 'future')}
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+            filterStage === 'future'
+              ? 'border-slate-700 bg-slate-100 ring-2 ring-slate-400/20 shadow-xs'
+              : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Scheduled Future</span>
+            <span className="h-2 w-2 rounded-full bg-slate-400" />
+          </div>
+          <div className="mt-1 text-lg font-bold font-mono text-slate-900">{counts.future} Trades</div>
+          <div className="text-[10px] text-slate-500">Subsequent project phases</div>
+        </button>
+      </div>
+
+      {/* Filter and search bar */}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="flex items-center gap-2">
+          {filterStage !== 'all' && (
+            <button
+              type="button"
+              onClick={() => setFilterStage('all')}
+              className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50"
+            >
+              Showing {filterStage} filter <X className="h-3 w-3" />
+            </button>
+          )}
+          <span className="text-slate-500">
+            Showing {tab === 'contractors' ? filteredContractors.length : filteredMaterials.length} of{' '}
+            {tab === 'contractors' ? D.contractorDeployment.rows.length : D.bulkPurchasing.rows.length} items
+          </span>
+        </div>
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder={`Search ${tab === 'contractors' ? 'contractor' : 'material'}...`}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="rounded-md border border-slate-200 bg-white py-1 pl-8 pr-2.5 text-xs text-slate-900 placeholder-slate-400 focus:border-slate-400 focus:outline-none"
+          />
+        </div>
+      </div>
+
+      {tab === 'contractors' ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50/70 text-[11px] font-semibold uppercase text-slate-500">
+                <th className="px-3 py-2.5">Trade / Contractor</th>
+                <th className="px-2 py-2.5 text-right">Notice</th>
+                <th className="border-l border-slate-200 px-3 py-2.5 bg-sky-50/40 text-slate-700">
+                  Wing A Pipeline (Req → WO → Site)
+                </th>
+                <th className="border-l border-slate-200 px-3 py-2.5 bg-indigo-50/40 text-slate-700">
+                  Wing B Pipeline (Req → WO → Site)
+                </th>
+                <th className="border-l border-slate-200 px-3 py-2.5">Alignment / Action Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredContractors.map((r) => {
+                const a = r.a;
+                const b = r.b;
+                const stageA = getContractorStage(a);
+                const stageB = getContractorStage(b);
+                const isDiscrepancy = a?.labour !== b?.labour || a?.woStatus !== b?.woStatus;
+
+                let actionBadge = null;
+                if (!a && !b) {
+                  actionBadge = (
+                    <span className="inline-flex items-center rounded border border-slate-200/60 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500">
+                      Scheduled Q4+
+                    </span>
+                  );
+                } else if (b?.labour === 'Not Given' && a?.labour !== 'Not Given') {
+                  actionBadge = (
+                    <span className="inline-flex items-center gap-1 rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
+                      ⚠️ Wing B labour req missing!
+                    </span>
+                  );
+                } else if (a?.labour === 'Not Given' && b?.labour === 'Not Given') {
+                  actionBadge = (
+                    <span className="inline-flex items-center gap-1 rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
+                      ⚠️ Both wings missing labour req!
+                    </span>
+                  );
+                } else if (stageA === 'active' && stageB === 'active') {
+                  actionBadge = (
+                    <span className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
+                      ✓ Synchronized & active
+                    </span>
+                  );
+                } else if (isDiscrepancy) {
+                  actionBadge = (
+                    <span className="inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                      Sync discrepancy
+                    </span>
+                  );
+                } else {
+                  actionBadge = (
+                    <span className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">
+                      In progress
+                    </span>
+                  );
+                }
+
+                return (
+                  <tr key={r.sr} className={`hover:bg-slate-50/80 ${isDiscrepancy ? 'bg-amber-50/15' : ''}`}>
+                    <td className="px-3 py-2.5 font-medium text-slate-900">
+                      {r.contractor}
+                    </td>
+                    <td className="px-2 py-2.5 text-right font-mono text-slate-500">
+                      {r.processing}d
+                    </td>
+
+                    {/* Wing A Pipeline */}
+                    <td className="border-l border-slate-100 px-3 py-2.5">
+                      {a ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <StagePill label="Req" value={a.labour} status={getStatusTone(a.labour)} />
+                          <span className="text-slate-300">→</span>
+                          <StagePill label="WO" value={a.woStatus} status={getStatusTone(a.woStatus)} />
+                          <span className="text-slate-300">→</span>
+                          <span className="font-mono text-[10px] text-slate-500">WO {a.wo}</span>
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 text-[11px]">— Not scheduled</span>
+                      )}
+                    </td>
+
+                    {/* Wing B Pipeline */}
+                    <td className="border-l border-slate-100 px-3 py-2.5">
+                      {b ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <StagePill label="Req" value={b.labour} status={getStatusTone(b.labour)} />
+                          <span className="text-slate-300">→</span>
+                          <StagePill label="WO" value={b.woStatus} status={getStatusTone(b.woStatus)} />
+                          <span className="text-slate-300">→</span>
+                          <span className="font-mono text-[10px] text-slate-500">WO {b.wo}</span>
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 text-[11px]">— Not scheduled</span>
+                      )}
+                    </td>
+
+                    {/* Alignment / Action */}
+                    <td className="border-l border-slate-100 px-3 py-2.5">
+                      {actionBadge}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50/70 text-[11px] font-semibold uppercase text-slate-500">
+                <th className="px-3 py-2.5">Material / Item</th>
+                <th className="px-2 py-2.5 text-right">Lead</th>
+                <th className="px-2 py-2.5 text-right">Proc.</th>
+                <th className="border-l border-slate-200 px-3 py-2.5 bg-sky-50/40 text-slate-700">
+                  Wing A Pipeline (Req → PO → Delivery)
+                </th>
+                <th className="border-l border-slate-200 px-3 py-2.5 bg-indigo-50/40 text-slate-700">
+                  Wing B Pipeline (Req → PO → Delivery)
+                </th>
+                <th className="border-l border-slate-200 px-3 py-2.5">Readiness / Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredMaterials.map((r) => {
+                const a = r.a;
+                const b = r.b;
+                const isDiscrepancy = a?.delivery !== b?.delivery;
+
+                let actionBadge = null;
+                if (!a && !b) {
+                  actionBadge = (
+                    <span className="inline-flex items-center rounded border border-slate-200/60 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500">
+                      Scheduled Q4+
+                    </span>
+                  );
+                } else if (a?.delivery === 'Not Done' || b?.delivery === 'Not Done') {
+                  actionBadge = (
+                    <span className="inline-flex items-center gap-1 rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
+                      ⚠️ Delivery pending
+                    </span>
+                  );
+                } else {
+                  actionBadge = (
+                    <span className="inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                      In transit / partial
+                    </span>
+                  );
+                }
+
+                return (
+                  <tr key={r.sr} className={`hover:bg-slate-50/80 ${isDiscrepancy ? 'bg-amber-50/15' : ''}`}>
+                    <td className="px-3 py-2.5 font-medium text-slate-900">{r.item}</td>
+                    <td className="px-2 py-2.5 text-right font-mono text-slate-500">{r.leadTime}d</td>
+                    <td className="px-2 py-2.5 text-right font-mono text-slate-500">{r.poProcessing}d</td>
+
+                    {/* Wing A Pipeline */}
+                    <td className="border-l border-slate-100 px-3 py-2.5">
+                      {a ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <StagePill label="Req" value={a.reqStatus} status={getStatusTone(a.reqStatus)} />
+                          <span className="text-slate-300">→</span>
+                          <StagePill label="PO" value={a.poStatus} status={getStatusTone(a.poStatus)} />
+                          <span className="text-slate-300">→</span>
+                          <StagePill label="Del" value={a.delivery} status={getStatusTone(a.delivery)} />
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 text-[11px]">— Not scheduled</span>
+                      )}
+                    </td>
+
+                    {/* Wing B Pipeline */}
+                    <td className="border-l border-slate-100 px-3 py-2.5">
+                      {b ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <StagePill label="Req" value={b.reqStatus} status={getStatusTone(b.reqStatus)} />
+                          <span className="text-slate-300">→</span>
+                          <StagePill label="PO" value={b.poStatus} status={getStatusTone(b.poStatus)} />
+                          <span className="text-slate-300">→</span>
+                          <StagePill label="Del" value={b.delivery} status={getStatusTone(b.delivery)} />
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 text-[11px]">— Not scheduled</span>
+                      )}
+                    </td>
+
+                    {/* Readiness / Status */}
+                    <td className="border-l border-slate-100 px-3 py-2.5">
+                      {actionBadge}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function ProjectOverview({ onSelectBuilding }: { onSelectBuilding: (b: Bldg) => void }) {
+  const total = D.uptoDateStatus[0];
+  const fy = D.statusSummary[1];
+  return (
+    <div className="space-y-5">
+      <ScheduleBar />
+      <StatStrip
+        building="all"
+        items={[
+          { label: 'Progress', value: total.actualPct, sub: `plan ${total.plannedPct}` },
+          { label: 'Spent', value: `₹${total.actualCost} Cr`, sub: `plan ₹${total.plannedCost} Cr` },
+          { label: 'Efficiency', value: total.efficiency, sub: 'upto date', tone: effTone(num(total.efficiency)) },
+          { label: 'Budget', value: '₹371.22 Cr', sub: 'baseline = signed off' },
+          {
+            label: 'FY 26-27 spend',
+            value: `₹${(
+              num(D.fyActualCostUptoOct.aBldg) +
+              num(D.fyActualCostUptoOct.bBldg) +
+              num(D.fyActualCostUptoOct.development)
+            ).toFixed(2)} Cr`,
+            sub: `Apr – Oct 26 · plan ${fy.plannedPct}`,
+            tone: effTone(num(fy.efficiency)),
+          },
+          {
+            label: 'Aluform',
+            value: `${
+              D.aluformCasting.A.filter((r) => r.date).length +
+              D.aluformCasting.B.filter((r) => r.date).length
+            }/68`,
+            sub: 'floors cast (A & B)',
+          },
+        ]}
+      />
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <div className="lg:col-span-8">
+          <ProjectMonthlyChart />
+        </div>
+        <div className="lg:col-span-4">
+          <SpendByBuildingChart />
+        </div>
+      </div>
+      <BudgetMap building="all" />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        {BLDGS.map((b) => (
+          <BuildingCard key={b} b={b} onSelect={onSelectBuilding} />
         ))}
       </div>
-      {tab === 'monthly' && <ProgressTab />}
-      {tab === 'targets' && <TargetsTab />}
-      {tab === 'aluform' && <AluformTab />}
+      <AttentionCard />
+      <CrossWingProcurementMatrix />
     </div>
   );
 }
 
-export function ElenorProcurementPage() {
-  return (
-    <div className="space-y-6">
-      <PageTitle title="Purchasing & Contractors" />
-      <ProcurementTab />
-    </div>
-  );
-}
+/* ================================== Building views ================================== */
 
-const SEVERITY_CLASS: Record<ElenorRiskSeverity, string> = {
-  High: 'bg-red-50 text-red-800 border-red-200',
-  Medium: 'bg-amber-50 text-amber-800 border-amber-200',
-  Low: 'bg-sky-50 text-sky-800 border-sky-200',
+const ACTIVITY_SHORT: Record<string, string> = {
+  'RCC - ALUFORM': 'RCC',
+  MASONARY: 'Masonry',
+  'TAR PLASTER': 'Plaster',
+  'CONCEALED PLUMBING': 'Plumbing',
+  WATERPROOFING: 'Water-proofing',
+  'ELECTRICAL - WALL DROPPING': 'Electrical',
+  'GYPSUM PLASTER': 'Gypsum',
+  'SPRINKLER SYSTEM': 'Sprinkler',
+  'FALSE CEILING - FRAMING': 'False ceiling',
+  TILING: 'Tiling',
 };
 
-export function ElenorRiskPage() {
-  const risks = computeElenorRisks();
-  const [filter, setFilter] = useState<ElenorRiskSeverity | 'All'>('All');
-  const shown = filter === 'All' ? risks : risks.filter((r) => r.severity === filter);
-  const count = (s: ElenorRiskSeverity) => risks.filter((r) => r.severity === s).length;
+/** Trade cascade up the tower: floors done per activity vs Oct and Dec targets. */
+function TowerChart({ rows }: { rows: ElenorTargetRow[] }) {
+  const data = rows.map((r) => ({
+    r,
+    done: achievedFloor(r.statusOct),
+    oct: topFloor(r.targetOct),
+    dec: topFloor(r.targetDec),
+  }));
+  const peak = Math.max(...data.flatMap((d) => [d.done ?? 0, d.oct ?? 0, d.dec ?? 0]));
+  const max = Math.ceil((peak + 1) / 4) * 4;
+  const ticks = Array.from({ length: max / 4 + 1 }, (_, i) => i * 4);
+  const pos = (f: number) => `${(f / max) * 100}%`;
+  const [hover, setHover] = useState<number | null>(null);
+  const h = hover !== null ? data[hover] : null;
 
   return (
-    <div className="space-y-6">
-      <PageTitle title="AI Risk Center" />
-      <p className="text-xs text-slate-500 -mt-3">
-        Every risk below is derived only from the figures in the Progress Review Presentation (PLN/407) — no numbers are added or estimated.
+    <Card
+      title="Work up the tower"
+      hint="floors done · Q3 targets"
+      action={
+        <div className="flex flex-wrap gap-3">
+          <Swatch color={C.actual} label="Done" />
+          <Swatch color="#0F172A" label="Oct target" />
+          <Swatch color={C.plan} label="Dec target" dashed />
+        </div>
+      }
+    >
+      <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+      <div className="flex min-w-[520px] gap-2">
+        <div className="relative h-64 w-6 shrink-0 text-right">
+          {ticks.map((t) => (
+            <span key={t} className="absolute right-0 -translate-y-1/2 font-mono text-[10px] text-slate-400" style={{ bottom: pos(t), transform: 'translateY(50%)' }}>
+              {t}
+            </span>
+          ))}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="relative h-64">
+            {ticks.map((t) => (
+              <div key={t} className="absolute inset-x-0 h-px bg-slate-100" style={{ bottom: pos(t) }} />
+            ))}
+            <div className="absolute inset-0 grid gap-1" style={{ gridTemplateColumns: `repeat(${data.length}, minmax(0, 1fr))` }}>
+              {data.map((d, i) => (
+                <div
+                  key={d.r.activity}
+                  className={`relative rounded-md transition-colors ${hover === i ? 'bg-slate-50' : ''}`}
+                  onMouseEnter={() => setHover(i)}
+                  onMouseLeave={() => setHover(null)}
+                  onFocus={() => setHover(i)}
+                  onBlur={() => setHover(null)}
+                  tabIndex={0}
+                  aria-label={`${d.r.activity}: ${d.r.statusOct}; Oct target ${d.r.targetOct}; Dec target ${d.r.targetDec}`}
+                >
+                  {d.dec !== null && (
+                    <div className="absolute left-[12%] right-[12%] border-t-2 border-dashed" style={{ bottom: pos(d.dec), borderColor: C.plan }} />
+                  )}
+                  {d.oct !== null && (
+                    <div className="absolute left-[12%] right-[12%] h-0.5 bg-slate-900" style={{ bottom: pos(d.oct) }} />
+                  )}
+                  {d.done !== null && (
+                    <>
+                      <div
+                        className="absolute bottom-0 left-[28%] right-[28%] rounded-t"
+                        style={{ height: pos(d.done), backgroundColor: C.actual }}
+                      />
+                      <span
+                        className="absolute inset-x-0 text-center font-mono text-[10px] font-semibold text-slate-900"
+                        style={{ bottom: `calc(${pos(d.done)} + 2px)` }}
+                      >
+                        {d.done}
+                      </span>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="mt-2 grid gap-1" style={{ gridTemplateColumns: `repeat(${data.length}, minmax(0, 1fr))` }}>
+            {data.map((d) => (
+              <div key={d.r.activity} className="flex flex-col items-center gap-1 text-center">
+                <span className="flex h-[26px] items-start text-[10px] leading-tight text-slate-600 ">
+                  {ACTIVITY_SHORT[d.r.activity] ?? d.r.activity}
+                </span>
+                <ToneIcon tone={d.r.status ? STATUS_TONE[d.r.status] : 'none'} className="h-3.5 w-3.5" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      </div>
+      <p className="mt-3 min-h-[2rem] border-t border-slate-100 pt-2 text-xs text-slate-600">
+        {h ? (
+          <>
+            <span className="font-semibold text-slate-900">{ACTIVITY_SHORT[h.r.activity] ?? h.r.activity}</span> · {h.r.statusOct} · Oct{' '}
+            {h.r.targetOct} · Nov {h.r.targetNov} · Dec {h.r.targetDec}
+          </>
+        ) : (
+          <span className="text-slate-400">Hover a column for details</span>
+        )}
       </p>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {(['High', 'Medium', 'Low'] as const).map((s) => (
+    </Card>
+  );
+}
+
+/** "JUNE 2025" -> "Jun 25" */
+function shortMonth(d: string) {
+  return d.replace(/^(\w)(\w{2})\w*\s+20(\d\d)$/, (_, a: string, bc: string, yy: string) => `${a}${bc.toLowerCase()} ${yy}`);
+}
+
+function shortTask(name: string) {
+  return name.replace(/^\(TG\)\s*/, '').replace(/^[AB]\s*-\s*/, '').replace(/\s*\(M\+L\)/, '').trim();
+}
+
+/** Planned vs actual % per task group as a dot plot (one row per group with progress). */
+function TaskGroupDots({ rows }: { rows: ElenorCostRow[] }) {
+  const hasGroups = rows.some((r) => r.level === 'group');
+  const items = rows
+    .filter((r) => r.level !== 'total' && r.plannedPct !== null)
+    .map((r) => ({ r, planned: num(r.plannedPct), actual: num(r.actualPct), base: num(r.baseline) }));
+  // Development keeps its Podium / Development sub-total structure; A & B sort by budget weight.
+  if (!hasGroups) items.sort((a, b) => b.base - a.base);
+  const cols = 'grid-cols-[minmax(0,7rem)_1fr_3.25rem] sm:grid-cols-[minmax(0,8.5rem)_1fr_3.5rem]';
+
+  return (
+    <Card
+      title="Task groups"
+      hint="% of each group done"
+      action={
+        <div className="flex gap-3">
+          <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+            <Dot color={C.actual} /> Actual
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+            <Dot color="#64748B" ring /> Planned
+          </span>
+        </div>
+      }
+    >
+      <div className="space-y-1">
+        {items.map(({ r, planned, actual }) => {
+          const lo = Math.min(planned, actual);
+          const hi = Math.max(planned, actual);
+          const isGroup = r.level === 'group';
+          return (
+            <div
+              key={r.name}
+              className={`grid ${cols} items-center gap-3 rounded-md px-1 py-1 hover:bg-slate-50 ${isGroup ? 'bg-slate-50/70 mt-2 first:mt-0' : ''}`}
+              title={`${shortTask(r.name)} — baseline ₹${r.baseline} L · planned ${r.plannedPct} (₹${r.plannedCost} L) · actual ${r.actualPct} (₹${r.actualCost} L)`}
+            >
+              <span className={`truncate text-xs ${isGroup ? 'font-semibold text-slate-900' : 'text-slate-700'} ${r.indent ? 'pl-3' : ''}`}>
+                {shortTask(r.name)}
+              </span>
+              <div className="relative h-4">
+                <div className="absolute inset-x-0 top-1/2 h-px bg-slate-100" />
+                <div className="absolute top-1/2 h-0.5 -translate-y-1/2 bg-slate-300" style={{ left: `${lo}%`, width: `${hi - lo}%` }} />
+                <span className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: `${Math.min(planned, 100)}%` }}>
+                  <Dot color="#64748B" ring />
+                </span>
+                <span className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: `${Math.min(actual, 100)}%` }}>
+                  <span className="block h-2.5 w-2.5 rounded-full ring-2 ring-white" style={{ backgroundColor: C.actual }} />
+                </span>
+              </div>
+              <span className="text-right">
+                <Effi value={r.efficiency} />
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <div className={`mt-1 grid ${cols} gap-3 px-1`}>
+        <span />
+        <div className="flex justify-between font-mono text-[10px] text-slate-400">
+          <span>0</span>
+          <span>50</span>
+          <span>100%</span>
+        </div>
+        <span />
+      </div>
+    </Card>
+  );
+}
+
+/** Where the budget sits: Ranked Pareto bullet chart with baseline commitment vs actual spend vs planned target. */
+function BudgetMap({ rows, building }: { rows?: ElenorCostRow[]; building?: ElenorBuilding }) {
+  const [scope, setScope] = useState<ElenorBuilding>(building ?? 'all');
+  const [viewMode, setViewMode] = useState<'top10' | 'all'>('top10');
+  const [search, setSearch] = useState('');
+
+  // Keep scope in sync if a specific building prop is passed
+  const activeScope = building && building !== 'all' ? building : scope;
+
+  // Process items based on activeScope
+  const items = useMemo(() => {
+    if (activeScope === 'all') {
+      const groups: Record<
+        string,
+        {
+          base: number;
+          plannedCost: number;
+          actualCost: number;
+          buildings: Set<string>;
+          started: boolean;
+        }
+      > = {};
+
+      (['A', 'B', 'Development'] as const).forEach((bldg) => {
+        D.buildingProgress[bldg]
+          .filter((r) => r.level === 'item' && num(r.baseline) > 0)
+          .forEach((r) => {
+            const key = shortTask(r.name);
+            if (!groups[key]) {
+              groups[key] = {
+                base: 0,
+                plannedCost: 0,
+                actualCost: 0,
+                buildings: new Set(),
+                started: false,
+              };
+            }
+            groups[key].base += num(r.baseline);
+            groups[key].plannedCost += num(r.plannedCost);
+            groups[key].actualCost += num(r.actualCost);
+            groups[key].buildings.add(bldg === 'Development' ? 'Dev' : `${bldg} Bldg`);
+            if (r.plannedPct !== null || r.actualPct !== null) {
+              groups[key].started = true;
+            }
+          });
+      });
+
+      return Object.entries(groups)
+        .map(([name, g]) => {
+          const plannedPct = g.base > 0 ? (g.plannedCost / g.base) * 100 : 0;
+          const actualPct = g.base > 0 ? (g.actualCost / g.base) * 100 : 0;
+          const eff = g.plannedCost > 0 ? `${Math.round((g.actualCost / g.plannedCost) * 100)}%` : null;
+          return {
+            name,
+            fullName: name,
+            base: g.base,
+            plannedCost: g.plannedCost,
+            actualCost: g.actualCost,
+            plannedPct,
+            actualPct,
+            efficiency: eff,
+            started: g.started,
+            buildings: Array.from(g.buildings),
+          };
+        })
+        .sort((a, b) => b.base - a.base);
+    }
+
+    // Specific building
+    const sourceRows = rows ?? D.buildingProgress[activeScope as Bldg];
+    return sourceRows
+      .filter((r) => r.level === 'item' && num(r.baseline) > 0)
+      .map((r) => {
+        const base = num(r.baseline);
+        const plannedCost = num(r.plannedCost);
+        const actualCost = num(r.actualCost);
+        const plannedPct = num(r.plannedPct);
+        const actualPct = num(r.actualPct);
+        return {
+          name: shortTask(r.name),
+          fullName: r.name,
+          base,
+          plannedCost,
+          actualCost,
+          plannedPct,
+          actualPct,
+          efficiency: r.efficiency,
+          started: r.plannedPct !== null || r.actualPct !== null,
+        };
+      })
+      .sort((a, b) => b.base - a.base);
+  }, [activeScope, rows]);
+
+  const totalBaseline = items.reduce((s, it) => s + it.base, 0);
+  const totalSpent = items.reduce((s, it) => s + it.actualCost, 0);
+  const totalPlanned = items.reduce((s, it) => s + it.plannedCost, 0);
+  const top10Sum = items.slice(0, 10).reduce((s, it) => s + it.base, 0);
+  const paretoPct = totalBaseline > 0 ? ((top10Sum / totalBaseline) * 100).toFixed(1) : '0';
+
+  const filtered = useMemo(() => {
+    let list = items;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((it) => it.name.toLowerCase().includes(q) || it.fullName.toLowerCase().includes(q));
+    }
+    if (viewMode === 'top10' && !search.trim()) {
+      list = list.slice(0, 10);
+    }
+    return list;
+  }, [items, search, viewMode]);
+
+  return (
+    <Card
+      title="Where the budget sits"
+      hint="Ranked Pareto bullet chart · baseline commitment vs actual spend vs planned target"
+      action={
+        <div className="flex flex-wrap items-center gap-2">
+          {(!building || building === 'all') && (
+            <div className="inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
+              {(['all', 'A', 'B', 'Development'] as const).map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setScope(s)}
+                  className={`rounded-lg px-2.5 py-1 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+                    scope === s ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {s === 'all' ? 'Project Total' : s === 'Development' ? 'Dev' : `${s} Bldg`}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
+            <button
+              type="button"
+              onClick={() => setViewMode('top10')}
+              className={`rounded-lg px-2.5 py-1 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+                viewMode === 'top10' ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold' : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Top 10 Pareto ({paretoPct}%)
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('all')}
+              className={`rounded-lg px-2.5 py-1 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+                viewMode === 'all' ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold' : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              All ({items.length})
+            </button>
+          </div>
+        </div>
+      }
+    >
+      {/* KPI & Pareto Summary Banner */}
+      <div className="mb-4 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3.5 shadow-2xs">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-4 text-slate-600">
+            <span>
+              Total Baseline: <strong className="font-mono text-slate-900">₹{lacs(totalBaseline)} Lacs</strong>
+            </span>
+            <span>
+              Actual Spent: <strong className="font-mono text-slate-900">₹{lacs(totalSpent)} Lacs</strong>{' '}
+              ({totalBaseline > 0 ? ((totalSpent / totalBaseline) * 100).toFixed(1) : '0'}%)
+            </span>
+            <span>
+              Planned Target: <strong className="font-mono text-slate-900">₹{lacs(totalPlanned)} Lacs</strong>{' '}
+              ({totalBaseline > 0 ? ((totalPlanned / totalBaseline) * 100).toFixed(1) : '0'}%)
+            </span>
+          </div>
+          <div className="flex items-center gap-3 text-[11px] text-slate-500">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-xs" style={{ backgroundColor: C.actual }} /> Actual spend
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-3 w-0.5 bg-slate-800" /> Planned target
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-xs bg-slate-200" /> Uncommitted
+            </span>
+          </div>
+        </div>
+
+        {viewMode === 'all' && (
+          <div className="mt-2.5">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search trade group..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full rounded-xl border border-slate-200/90 bg-white/90 py-1.5 pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/50 focus:outline-none transition-all shadow-2xs"
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Bullet Bars List */}
+      <div className="space-y-2.5">
+        {filtered.map((item, idx) => {
+          const share = totalBaseline > 0 ? (item.base / totalBaseline) * 100 : 0;
+          const isLagging = item.started && item.actualPct === 0 && item.plannedPct > 0;
+          const isNotStarted = !item.started || (item.plannedPct === 0 && item.actualPct === 0);
+          const effVal = item.efficiency ? parseInt(item.efficiency, 10) : null;
+          const unspent = Math.max(0, item.base - item.actualCost);
+
+          return (
+            <div
+              key={item.fullName}
+              className="rounded-xl border border-slate-200/80 bg-white/95 p-3 hover:border-slate-300 hover:shadow-xs transition-all duration-150"
+            >
+              {/* Row Header */}
+              <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 font-mono text-[10px] font-semibold text-slate-600">
+                    #{idx + 1}
+                  </span>
+                  <span className="font-semibold text-xs sm:text-sm text-slate-900 tracking-tight truncate">
+                    {item.name}
+                  </span>
+                  {item.buildings && item.buildings.length > 0 && (
+                    <span className="rounded-md bg-slate-100/90 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
+                      {item.buildings.join(' · ')}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <div className="text-right">
+                    <span className="font-mono font-semibold text-slate-900">₹{lacs(item.base)} L</span>
+                    <span className="ml-1 text-[11px] text-slate-500">({share.toFixed(1)}%)</span>
+                  </div>
+                  {/* Restrained semantic badges */}
+                  {isLagging ? (
+                    <span className="inline-flex items-center rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                      Lagging · 0%
+                    </span>
+                  ) : isNotStarted ? (
+                    <span className="inline-flex items-center rounded-md border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                      Not Started
+                    </span>
+                  ) : effVal !== null && effVal < 25 ? (
+                    <span className="inline-flex items-center rounded-md border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
+                      Critical · {item.efficiency}
+                    </span>
+                  ) : effVal !== null && effVal < 75 ? (
+                    <span className="inline-flex items-center rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                      Behind · {item.efficiency}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center rounded-md border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800">
+                      On Track · {item.efficiency ?? `${item.actualPct.toFixed(0)}%`}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Bullet Bar */}
+              <div
+                className="relative h-3.5 w-full rounded-full bg-slate-100 overflow-hidden"
+                title={`Baseline: ₹${lacs(item.base)} L | Actual: ₹${lacs(item.actualCost)} L (${item.actualPct.toFixed(1)}%) | Planned: ₹${lacs(item.plannedCost)} L (${item.plannedPct.toFixed(1)}%)`}
+              >
+                {/* Actual Spend Fill */}
+                <div
+                  className="h-full rounded-l-full transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]"
+                  style={{
+                    width: `${Math.min(100, Math.max(0, item.actualPct))}%`,
+                    backgroundColor: C.actual,
+                  }}
+                />
+                {/* Planned Target Marker Line */}
+                {item.plannedPct > 0 && (
+                  <div
+                    className="absolute top-0 bottom-0 w-0.5 bg-slate-800 -translate-x-1/2 z-10"
+                    style={{ left: `${Math.min(100, item.plannedPct)}%` }}
+                    title={`Planned Target: ${item.plannedPct.toFixed(1)}% (₹${lacs(item.plannedCost)} L)`}
+                  />
+                )}
+              </div>
+
+              {/* Sub-metrics */}
+              <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-4 text-[11px] text-slate-500">
+                <div className="flex items-center gap-3">
+                  <span>
+                    Spent: <strong className="font-mono text-slate-700">₹{lacs(item.actualCost)} L</strong> ({item.actualPct.toFixed(1)}%)
+                  </span>
+                  <span>
+                    Plan: <strong className="font-mono text-slate-700">₹{lacs(item.plannedCost)} L</strong> ({item.plannedPct.toFixed(1)}%)
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 font-mono">
+                  <span>Unspent: ₹{lacs(unspent)} L</span>
+                  {item.efficiency && (
+                    <span className={num(item.efficiency) < 50 ? 'text-amber-700 font-semibold' : 'text-slate-600'}>
+                      Effi: {item.efficiency}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function AluformChart({ b }: { b: 'A' | 'B' }) {
+  const other: 'A' | 'B' = b === 'A' ? 'B' : 'A';
+  const toPoints = (k: 'A' | 'B') =>
+    D.aluformCasting[k]
+      .filter((r) => r.date)
+      .map((r) => ({
+        t: parseDmy(r.date as string),
+        floor: parseInt(r.floor, 10),
+        cycle: r.cycle ? `${parseInt(r.cycle, 10)}d` : '',
+      }))
+      .sort((x, y) => x.t - y.t);
+  const mine = toPoints(b);
+  const theirs = toPoints(other);
+  const { strike } = D.aluformCasting;
+  const s1 = parseDmy(strike.from);
+  const s2 = parseDmy(strike.to);
+  const all = [...mine, ...theirs].map((p) => p.t);
+  const minT = Math.min(...all, s1) - 6 * 86400000;
+  const maxT = Math.max(...all) + 10 * 86400000;
+  const ticks: number[] = [];
+  for (let d = new Date(new Date(minT).getFullYear(), new Date(minT).getMonth() + 1, 1); d.getTime() <= maxT; d.setMonth(d.getMonth() + 1)) {
+    ticks.push(d.getTime());
+  }
+  const fmt = (t: number) => new Date(t).toLocaleDateString('en-GB', { month: 'short' });
+  const milestones = D.timeline.milestones.filter((m) => m.event.startsWith(`${b} Bldg`) || m.event.startsWith('A & B'));
+
+  return (
+    <Card
+      title="Aluform slab cycle"
+      hint="floor cast vs date · days per floor"
+      action={
+        <div className="flex gap-3">
+          <Swatch color={C.actual} label={`${b} Bldg.`} />
+          <Swatch color={C.context} label={`${other} Bldg.`} />
+        </div>
+      }
+    >
+      {/* Executive speed & ERP sync KPI chips */}
+      <div className="mb-3.5 grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+        <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">A Bldg Avg Cycle</div>
+          <div className="mt-0.5 flex items-baseline gap-1">
+            <span className="font-mono text-base font-bold text-slate-900">12.4</span>
+            <span className="text-xs text-slate-500">days</span>
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">B Bldg Avg Cycle</div>
+          <div className="mt-0.5 flex items-baseline gap-1">
+            <span className="font-mono text-base font-bold text-slate-900">13.1</span>
+            <span className="text-xs text-slate-500">days</span>
+          </div>
+        </div>
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-800">Highrise ERP Sync</div>
+          <div className="mt-0.5 flex items-baseline gap-1">
+            <span className="font-mono text-base font-bold text-emerald-800">98.2%</span>
+            <span className="text-xs text-emerald-700">aligned</span>
+          </div>
+        </div>
+        <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-amber-800">RMC Strike Impact</div>
+          <div className="mt-0.5 flex items-baseline gap-1">
+            <span className="font-mono text-base font-bold text-amber-900">23</span>
+            <span className="text-xs text-amber-800">days delay</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="h-60">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart margin={{ top: 16, right: 12, left: -24, bottom: 0 }}>
+            <CartesianGrid stroke={C.grid} vertical={false} />
+            <XAxis
+              type="number"
+              dataKey="t"
+              domain={[minT, maxT]}
+              ticks={ticks}
+              tickFormatter={fmt}
+              tick={AXIS_TICK}
+              tickLine={false}
+              axisLine={{ stroke: C.grid }}
+            />
+            <YAxis type="number" dataKey="floor" domain={[0, 8]} ticks={[0, 2, 4, 6, 8]} tick={AXIS_TICK} tickLine={false} axisLine={false} />
+            <ReferenceArea
+              x1={s1}
+              x2={s2}
+              fill="#F1F5F9"
+              label={{ value: `RMC strike ${strike.days}d`, position: 'insideTop', fontSize: 10, fill: '#64748B' }}
+            />
+            <Tooltip
+              contentStyle={TIP}
+              labelFormatter={(t) => new Date(Number(t)).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
+              formatter={(v, n) => [`Floor ${v}`, n]}
+            />
+            <Line isAnimationActive={false} data={theirs} dataKey="floor" name={`${other} Bldg.`} stroke={C.context} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+            <Line
+              isAnimationActive={false}
+              data={mine}
+              dataKey="floor"
+              name={`${b} Bldg.`}
+              stroke={C.actual}
+              strokeWidth={2}
+              dot={{ r: 3.5, fill: C.actual, stroke: '#fff', strokeWidth: 2 }}
+              activeDot={{ r: 5 }}
+            >
+              <LabelList dataKey="cycle" position="left" offset={8} style={{ fontSize: 10, fill: '#475569', fontWeight: 600 }} />
+            </Line>
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <ol className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-slate-100 pt-2 text-xs">
+        {milestones.map((m) => (
+          <li key={m.date + m.event} className="text-slate-700">
+            <span className="mr-1.5 font-mono text-slate-500">{shortMonth(m.date)}</span>
+            {m.event.replace(/^.*?Bldg\.\s*[–-]\s*/, '')}
+          </li>
+        ))}
+      </ol>
+    </Card>
+  );
+}
+
+function HighriseCard({ side }: { side: 'a' | 'b' }) {
+  // Collapse consecutive Aluform floors that share the same status.
+  type Row = { label: string; actual: string; status: string; open: boolean };
+  const rows: Row[] = [];
+  let run: { from: string; to: string; actual: string; status: string; open: boolean } | null = null;
+  const flush = () => {
+    if (run) rows.push({ label: `Aluform ${run.from}${run.to !== run.from ? `–${run.to}` : ''}`, actual: run.actual, status: run.status, open: run.open });
+    run = null;
+  };
+  D.highriseStatus.forEach((r) => {
+    const actual = side === 'a' ? r.aActual : r.bActual;
+    const status = side === 'a' ? r.aHighrise : r.bHighrise;
+    const open = (side === 'a' ? r.aTone : r.bTone) === 'open';
+    const floor = r.activity.match(/(\d+(?:st|nd|rd|th))/)?.[1];
+    if (r.activity.startsWith('ALUFORM') && floor) {
+      if (run && run.actual === actual && run.status === status) run.to = floor;
+      else {
+        flush();
+        run = { from: floor, to: floor, actual, status, open };
+      }
+      return;
+    }
+    flush();
+    const name = r.activity.toLowerCase().replace('masonary', 'masonry');
+    rows.push({ label: name.charAt(0).toUpperCase() + name.slice(1), actual, status, open });
+  });
+  flush();
+  const openCount = rows.filter((r) => r.open).length;
+
+  return (
+    <Card title="Site vs Highrise" hint={`${openCount} with open tasks`}>
+      <ul className="divide-y divide-slate-100">
+        {rows.map((r) => (
+          <li key={r.label} className="flex items-center gap-3 py-2" title={`${r.actual} · ${r.status}`}>
+            <ToneIcon tone={r.open ? 'part' : 'good'} className="h-4 w-4 shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs font-medium text-slate-800">{r.label}</span>
+              <span className="block truncate text-[11px] text-slate-500">{r.actual.replace(/ Complete(d)?$/, '')}</span>
+            </span>
+            <span className={`text-[11px] font-medium ${r.open ? 'text-amber-700' : 'text-slate-500'}`}>{r.open ? 'Open' : 'Closed'}</span>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+function SupplyCard({ side }: { side: 'a' | 'b' }) {
+  const [tab, setTab] = useState<'contractors' | 'materials'>('contractors');
+  const [filterStage, setFilterStage] = useState<'all' | PipelineStageKey>('all');
+
+  const bldgName = side === 'a' ? 'A Building' : 'B Building';
+
+  // Contractor counts for this side
+  const contractorCounts = useMemo(() => {
+    let active = 0;
+    let mobilising = 0;
+    let action = 0;
+    let future = 0;
+
+    D.contractorDeployment.rows.forEach((r) => {
+      const s = r[side];
+      const stage = getContractorStage(s);
+      if (stage === 'active') active++;
+      else if (stage === 'mobilising') mobilising++;
+      else if (stage === 'action') action++;
+      else future++;
+    });
+
+    return { active, mobilising, action, future };
+  }, [side]);
+
+  // Material counts for this side
+  const materialCounts = useMemo(() => {
+    let active = 0;
+    let mobilising = 0;
+    let action = 0;
+    let future = 0;
+
+    D.bulkPurchasing.rows.forEach((r) => {
+      const s = r[side];
+      const stage = getMaterialStage(s);
+      if (stage === 'active') active++;
+      else if (stage === 'mobilising') mobilising++;
+      else if (stage === 'action') action++;
+      else future++;
+    });
+
+    return { active, mobilising, action, future };
+  }, [side]);
+
+  const counts = tab === 'contractors' ? contractorCounts : materialCounts;
+
+  const filteredContractors = useMemo(() => {
+    return D.contractorDeployment.rows.filter((r) => {
+      const s = r[side];
+      const stage = getContractorStage(s);
+      if (filterStage !== 'all' && stage !== filterStage) return false;
+      return true;
+    });
+  }, [side, filterStage]);
+
+  const filteredMaterials = useMemo(() => {
+    return D.bulkPurchasing.rows.filter((r) => {
+      const s = r[side];
+      const stage = getMaterialStage(s);
+      if (filterStage !== 'all' && stage !== filterStage) return false;
+      return true;
+    });
+  }, [side, filterStage]);
+
+  return (
+    <Card
+      title={`Supply & Contractors · ${bldgName}`}
+      hint="Procurement pipeline & readiness workflow · PLN/409 & PLN/410"
+      action={
+        <div className="inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
           <button
-            key={s}
             type="button"
-            aria-pressed={filter === s}
-            onClick={() => setFilter(filter === s ? 'All' : s)}
-            className={`rounded-xl border bg-white p-5 flex items-center justify-between gap-4 text-left transition-colors ${
-              filter === s ? 'border-slate-900' : 'border-slate-200 hover:border-slate-300'
+            onClick={() => {
+              setTab('contractors');
+              setFilterStage('all');
+            }}
+            className={`rounded-lg px-2.5 py-1 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+              tab === 'contractors'
+                ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
+                : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            <div>
-              <p className="text-xs font-medium text-slate-500">Severity</p>
-              <p className={`mt-1 inline-flex rounded-md border px-2 py-0.5 text-sm font-semibold ${SEVERITY_CLASS[s]}`}>{s}</p>
-            </div>
-            <span className="font-mono text-2xl font-semibold text-slate-900 tabular-nums">{count(s)}</span>
+            Contractors ({D.contractorDeployment.rows.length})
           </button>
-        ))}
+          <button
+            type="button"
+            onClick={() => {
+              setTab('materials');
+              setFilterStage('all');
+            }}
+            className={`rounded-lg px-2.5 py-1 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+              tab === 'materials'
+                ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            Bulk Materials ({D.bulkPurchasing.rows.length})
+          </button>
+        </div>
+      }
+    >
+      {/* 4 Pipeline Funnel Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+        <button
+          type="button"
+          onClick={() => setFilterStage(filterStage === 'active' ? 'all' : 'active')}
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+            filterStage === 'active'
+              ? 'border-emerald-600/80 bg-emerald-50/70 ring-2 ring-emerald-500/20 shadow-xs'
+              : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Active</span>
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+          </div>
+          <div className="mt-0.5 text-base font-bold font-mono text-slate-900">{counts.active}</div>
+          <div className="text-[10px] text-slate-500">On site / done</div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilterStage(filterStage === 'mobilising' ? 'all' : 'mobilising')}
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+            filterStage === 'mobilising'
+              ? 'border-amber-600/80 bg-amber-50/70 ring-2 ring-amber-500/20 shadow-xs'
+              : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">In Progress</span>
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+          </div>
+          <div className="mt-0.5 text-base font-bold font-mono text-slate-900">{counts.mobilising}</div>
+          <div className="text-[10px] text-slate-500">Part given / done</div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilterStage(filterStage === 'action' ? 'all' : 'action')}
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+            filterStage === 'action'
+              ? 'border-rose-600/80 bg-rose-50/70 ring-2 ring-rose-500/20 shadow-xs'
+              : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Action</span>
+            <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+          </div>
+          <div className="mt-0.5 text-base font-bold font-mono text-rose-700">{counts.action}</div>
+          <div className="text-[10px] text-slate-500">Overdue / missing</div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setFilterStage(filterStage === 'future' ? 'all' : 'future')}
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+            filterStage === 'future'
+              ? 'border-slate-700 bg-slate-100 ring-2 ring-slate-400/20 shadow-xs'
+              : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Future</span>
+            <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+          </div>
+          <div className="mt-0.5 text-base font-bold font-mono text-slate-900">{counts.future}</div>
+          <div className="text-[10px] text-slate-500">Subsequent phase</div>
+        </button>
       </div>
-      <Section
-        title={`Risk Register (${shown.length}${filter === 'All' ? '' : ` ${filter}`})`}
-        subtitle={filter === 'All' ? 'Sorted by severity · click a severity card to filter' : 'Click the card again to show all'}
-      >
-        <ul className="divide-y divide-slate-100 -mx-5">
-          {shown.map((r) => (
-            <li key={r.id} className="px-5 py-3.5 flex flex-col sm:flex-row sm:items-start gap-3">
-              <span className={`shrink-0 inline-flex w-fit rounded-md border px-2 py-0.5 text-[11px] font-semibold ${SEVERITY_CLASS[r.severity]}`}>
-                {r.severity}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-slate-900">{r.title}</p>
-                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500 mt-0.5">
-                  {r.category} · {r.scope}
-                </p>
-                <p className="text-sm text-slate-700 mt-1.5">{r.reason}</p>
-                <p className="text-xs text-slate-500 mt-1">
-                  <span className="font-semibold text-slate-600">Next step:</span> {r.suggestedNextStep}
-                </p>
+
+      {filterStage !== 'all' && (
+        <div className="mb-2 flex items-center gap-2 text-xs">
+          <button
+            type="button"
+            onClick={() => setFilterStage('all')}
+            className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50"
+          >
+            Showing {filterStage} filter <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
+      {tab === 'contractors' ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50/70 text-[10px] font-semibold uppercase text-slate-500">
+                <th className="px-2.5 py-2">Contractor / Trade</th>
+                <th className="px-2 py-2 text-right">Notice</th>
+                <th className="px-2.5 py-2">Planned</th>
+                <th className="px-2.5 py-2">Stage 1: Labour Req</th>
+                <th className="px-2.5 py-2">Stage 2: Work Order</th>
+                <th className="px-2.5 py-2">Readiness Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredContractors.map((r) => {
+                const s = r[side];
+                const stage = getContractorStage(s);
+                return (
+                  <tr key={r.sr} className="hover:bg-slate-50/80">
+                    <td className="px-2.5 py-2 font-medium text-slate-900">{r.contractor}</td>
+                    <td className="px-2 py-2 text-right font-mono text-slate-500">{r.processing}d</td>
+                    <td className="px-2.5 py-2 font-mono text-slate-600">{s?.planned ?? '—'}</td>
+                    <td className="px-2.5 py-2">
+                      {s ? (
+                        <StagePill label="Labour" value={s.labour} status={getStatusTone(s.labour)} />
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-2.5 py-2">
+                      {s ? (
+                        <StagePill label="WO" value={s.woStatus} status={getStatusTone(s.woStatus)} />
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-2.5 py-2">
+                      {stage === 'active' ? (
+                        <span className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800">
+                          ✓ Active on site
+                        </span>
+                      ) : stage === 'action' ? (
+                        <span className="inline-flex items-center gap-1 rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
+                          ⚠️ Action needed
+                        </span>
+                      ) : stage === 'mobilising' ? (
+                        <span className="inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                          In progress
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded border border-slate-200/60 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-400">
+                          Scheduled
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50/70 text-[10px] font-semibold uppercase text-slate-500">
+                <th className="px-2.5 py-2">Material Item</th>
+                <th className="px-2 py-2 text-right">Lead</th>
+                <th className="px-2.5 py-2">Planned</th>
+                <th className="px-2.5 py-2">Stage 1: Requisition</th>
+                <th className="px-2.5 py-2">Stage 2: PO</th>
+                <th className="px-2.5 py-2">Stage 3: Delivery</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredMaterials.map((r) => {
+                const s = r[side];
+                return (
+                  <tr key={r.sr} className="hover:bg-slate-50/80">
+                    <td className="px-2.5 py-2 font-medium text-slate-900">{r.item}</td>
+                    <td className="px-2 py-2 text-right font-mono text-slate-500">{r.leadTime}d</td>
+                    <td className="px-2.5 py-2 font-mono text-slate-600">{s?.planned ?? '—'}</td>
+                    <td className="px-2.5 py-2">
+                      {s ? (
+                        <StagePill label="Req" value={s.reqStatus} status={getStatusTone(s.reqStatus)} />
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-2.5 py-2">
+                      {s ? (
+                        <StagePill label="PO" value={s.poStatus} status={getStatusTone(s.poStatus)} />
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-2.5 py-2">
+                      {s ? (
+                        <StagePill label="Del" value={s.delivery} status={getStatusTone(s.delivery)} />
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function DevTargetsCard() {
+  const pct = (t: string) => {
+    const m = t.match(/(\d+)%/);
+    return m ? Number(m[1]) : null;
+  };
+  return (
+    <Card title="Q3 targets" hint="% of work item">
+      <div className="space-y-4">
+        {D.targetVsActual.Development.map((r) => {
+          const done = pct(r.statusOct);
+          const marks = [
+            { k: 'Oct', v: pct(r.targetOct) },
+            { k: 'Nov', v: pct(r.targetNov) },
+            { k: 'Dec', v: pct(r.targetDec) },
+          ].filter((m) => m.v !== null) as Array<{ k: string; v: number }>;
+          const phase = [r.statusOct, r.targetNov, r.targetDec, r.targetOct].find((x) => x !== '-')?.split(' –')[0] ?? '';
+          return (
+            <div key={r.activity} title={`Oct status ${r.statusOct} · targets Oct ${r.targetOct}, Nov ${r.targetNov}, Dec ${r.targetDec}`}>
+              <div className="mb-1.5 flex items-center gap-2 text-xs">
+                <ToneIcon tone={r.status ? STATUS_TONE[r.status] : 'none'} className="h-3.5 w-3.5" />
+                <span className="font-semibold text-slate-900">{r.activity === 'COMMERCIAL' ? 'Commercial' : r.activity}</span>
+                <span className="text-slate-500">{phase.toLowerCase()}</span>
+                <span className="ml-auto font-mono font-semibold tabular-nums text-slate-900">{done !== null ? `${done}%` : 'not started'}</span>
               </div>
-            </li>
+              <div className="relative h-2 rounded-full bg-slate-100">
+                {done !== null && <div className="h-full rounded-full" style={{ width: `${done}%`, backgroundColor: C.actual }} />}
+                {marks.map((m) => (
+                  <span key={m.k} className="absolute -top-1 -bottom-1 w-0.5 bg-slate-500" style={{ left: `${m.v}%` }} />
+                ))}
+              </div>
+              <div className="relative mt-1 h-3">
+                {marks.map((m) => (
+                  <span key={m.k} className="absolute -translate-x-1/2 font-mono text-[10px] text-slate-400" style={{ left: `${m.v}%` }}>
+                    {m.k}
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function BuildingView({ b }: { b: Bldg }) {
+  const info = bldgInfo(b);
+  const t = targetCounts(info.targets);
+  const u = info.upto;
+  const stats = [
+    { label: 'Progress', value: u.actualPct, sub: `plan ${u.plannedPct}` },
+    { label: 'Spent', value: `₹${u.actualCost} Cr`, sub: `plan ₹${u.plannedCost} Cr` },
+    { label: 'Efficiency', value: u.efficiency, sub: 'upto date', tone: effTone(num(u.efficiency)) },
+    { label: 'Budget', value: `₹${u.totalCost} Cr`, sub: u.detail?.replace(/[()]/g, '') ?? 'incl. podium' },
+    { label: 'FY 26-27 spend', value: `₹${info.fyCost} Cr`, sub: 'Apr – Oct 26' },
+    info.cast
+      ? { label: 'Aluform', value: `${info.floorsCast}/${D.aluformCasting.totalFloors}`, sub: 'floors cast' }
+      : { label: 'Oct targets', value: `${t.met}/${t.total}`, sub: 'met', tone: 'good' as Tone },
+  ];
+
+  if (b === 'Development') {
+    return (
+      <div className="space-y-5">
+        <StatStrip items={stats} building="Development" />
+        <BudgetMap rows={info.cost} building="Development" />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          <div className="lg:col-span-7">
+            <TaskGroupDots rows={info.cost} />
+          </div>
+          <div className="lg:col-span-5">
+            <DevTargetsCard />
+          </div>
+        </div>
+        <BuildingMonthlyChart b={b} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <StatStrip items={stats} building={b} />
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <div className="lg:col-span-8">
+          <TowerChart rows={info.targets} />
+        </div>
+        <div className="lg:col-span-4">
+          <HighriseCard side={info.side!} />
+        </div>
+      </div>
+      <BudgetMap rows={info.cost} building={b} />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <TaskGroupDots rows={info.cost} />
+        <AluformChart b={b as 'A' | 'B'} />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <div className="lg:col-span-8">
+          <SupplyCard side={info.side!} />
+        </div>
+        <div className="lg:col-span-4">
+          <BuildingMonthlyChart b={b} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================================== Detail tables ================================== */
+
+function Th({ children, right }: { children?: React.ReactNode; right?: boolean }) {
+  return (
+    <th scope="col" className={`px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 whitespace-nowrap ${right ? 'text-right' : 'text-left'}`}>
+      {children}
+    </th>
+  );
+}
+
+function Td({ children, right, strong, className = '' }: { children?: React.ReactNode; right?: boolean; strong?: boolean; className?: string }) {
+  return (
+    <td
+      className={`px-3 py-2 ${right ? 'text-right font-mono tabular-nums' : ''} ${strong ? 'font-semibold text-slate-900' : 'text-slate-700'} ${className}`}
+    >
+      {children ?? <span className="text-slate-300">—</span>}
+    </td>
+  );
+}
+
+function TableCard({ title, hint, head, rightFrom = 99, children }: { title: string; hint?: string; head: string[]; rightFrom?: number; children: React.ReactNode }) {
+  return (
+    <Card title={title} hint={hint}>
+      <div className="-mx-4 sm:-mx-5 overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-50 border-y border-slate-200">
+            <tr>
+              {head.map((h, i) => (
+                <Th key={h + i} right={i >= rightFrom}>
+                  {h}
+                </Th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">{children}</tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function CostTableCard({ b }: { b: Bldg }) {
+  return (
+    <TableCard title="Task-group cost" hint="₹ Lacs" head={['Task', 'Baseline', 'Plan %', 'Plan cost', 'Actual %', 'Actual cost', 'Effi.']} rightFrom={1}>
+      {D.buildingProgress[b].map((r) => (
+        <tr key={r.name} className={r.level === 'total' ? 'bg-slate-50' : r.level === 'group' ? 'bg-slate-50/50' : ''}>
+          <Td strong={r.level !== 'item'} className={r.indent ? 'pl-7' : ''}>
+            {r.level === 'total' ? `${bldgInfo(b).label} total` : shortTask(r.name)}
+          </Td>
+          <Td right strong>{r.baseline}</Td>
+          <Td right>{r.plannedPct}</Td>
+          <Td right>{r.plannedCost}</Td>
+          <Td right>{r.actualPct}</Td>
+          <Td right>{r.actualCost}</Td>
+          <td className="px-3 py-2 text-right">
+            <Effi value={r.efficiency} />
+          </td>
+        </tr>
+      ))}
+    </TableCard>
+  );
+}
+
+function TargetsTableCard({ b }: { b: Bldg }) {
+  const [statusFilter, setStatusFilter] = useState<'All' | 'Achieved' | 'Partly Done' | 'Failed'>('All');
+  const rows = D.targetVsActual[b];
+  const metCount = rows.filter((r) => r.status === 'Achieved').length;
+  const partlyCount = rows.filter((r) => r.status === 'Partly Done').length;
+  const failedCount = rows.filter((r) => r.status === 'Failed').length;
+  const totalCount = rows.length;
+
+  const filtered = statusFilter === 'All' ? rows : rows.filter((r) => r.status === statusFilter);
+
+  return (
+    <div className="space-y-3">
+      {/* Target Pipeline & Filter Strip */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3.5 shadow-2xs">
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="mr-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Target Filter:</span>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('All')}
+            className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+              statusFilter === 'All' ? 'bg-slate-900 text-white shadow-xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+          >
+            All ({totalCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('Achieved')}
+            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium transition-colors ${
+              statusFilter === 'Achieved' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+            }`}
+          >
+            <CheckCircle2 className="h-3 w-3" />
+            Achieved ({metCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('Partly Done')}
+            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium transition-colors ${
+              statusFilter === 'Partly Done' ? 'bg-amber-600 text-white shadow-xs' : 'bg-amber-50 text-amber-800 hover:bg-amber-100'
+            }`}
+          >
+            <CircleDot className="h-3 w-3" />
+            Partly Done ({partlyCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter('Failed')}
+            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium transition-colors ${
+              statusFilter === 'Failed' ? 'bg-red-600 text-white shadow-xs' : 'bg-red-50 text-red-800 hover:bg-red-100'
+            }`}
+          >
+            <XCircle className="h-3 w-3" />
+            Failed ({failedCount})
+          </button>
+        </div>
+
+        {/* Visual Pipeline Ratio Bar */}
+        <div className="flex items-center gap-2.5 text-xs">
+          <div className="flex h-2.5 w-32 overflow-hidden rounded-full bg-slate-100">
+            <div style={{ width: `${(metCount / totalCount) * 100}%` }} className="bg-emerald-500" title={`Achieved: ${metCount}`} />
+            <div style={{ width: `${(partlyCount / totalCount) * 100}%` }} className="bg-amber-500" title={`Partly Done: ${partlyCount}`} />
+            <div style={{ width: `${(failedCount / totalCount) * 100}%` }} className="bg-red-500" title={`Failed: ${failedCount}`} />
+          </div>
+          <span className="font-mono text-xs font-semibold text-slate-700">
+            {metCount}/{totalCount} Met
+          </span>
+        </div>
+      </div>
+
+      <TableCard
+        title="Q3 targets"
+        hint={`Oct – Dec 2026 · showing ${filtered.length} of ${totalCount} targets`}
+        head={['Activity', 'Oct target', 'Oct status', 'Nov', 'Dec']}
+      >
+        {filtered.map((r) => (
+          <tr key={r.activity} className={r.status === 'Failed' ? 'bg-red-50/25' : ''}>
+            <Td strong>{ACTIVITY_SHORT[r.activity] ?? r.activity}</Td>
+            <Td>{r.targetOct}</Td>
+            <td className="px-3 py-2">
+              <span className="inline-flex items-start gap-1.5 text-slate-800">
+                <ToneIcon tone={r.status ? STATUS_TONE[r.status] : 'none'} className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {r.statusOct}
+              </span>
+            </td>
+            <Td>{r.targetNov}</Td>
+            <Td>{r.targetDec}</Td>
+          </tr>
+        ))}
+      </TableCard>
+    </div>
+  );
+}
+
+function StatusCell({ text }: { text: string }) {
+  return (
+    <td className="px-3 py-2 whitespace-nowrap">
+      <span className="inline-flex items-center gap-1.5 text-slate-800">
+        <ToneIcon tone={textTone(text)} className="h-3.5 w-3.5" />
+        {text}
+      </span>
+    </td>
+  );
+}
+
+function TowerTables({ b }: { b: 'A' | 'B' }) {
+  const side = b === 'A' ? 'a' : 'b';
+  return (
+    <>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <TableCard title="Aluform casting" hint="8th–32nd pending" head={['Floor', 'Date', 'Cycle']} rightFrom={2}>
+          {D.aluformCasting[b].map((r) => (
+            <tr key={r.floor}>
+              <Td strong>{r.floor}</Td>
+              <Td className="font-mono tabular-nums">{r.date}</Td>
+              <Td right>{r.cycle}</Td>
+            </tr>
           ))}
-        </ul>
-      </Section>
+        </TableCard>
+        <TableCard title="Site vs Highrise" hint={`upto ${D.asOfDate}`} head={['Activity', 'Actual', 'Highrise']}>
+          {D.highriseStatus.map((r) => (
+            <tr key={r.activity}>
+              <Td strong>{r.activity}</Td>
+              <Td>{side === 'a' ? r.aActual : r.bActual}</Td>
+              <td className="px-3 py-2">
+                <span className="inline-flex items-center gap-1.5 text-slate-800">
+                  <ToneIcon tone={(side === 'a' ? r.aTone : r.bTone) === 'open' ? 'part' : 'good'} className="h-3.5 w-3.5" />
+                  {side === 'a' ? r.aHighrise : r.bHighrise}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </TableCard>
+      </div>
+      <TableCard title="Bulk purchasing" hint={`${D.bulkPurchasing.ref} · days`} head={['Item', 'PO', 'Lead', 'Planned', 'Req. date', 'Req.', 'PO status', 'Delivery']}>
+        {D.bulkPurchasing.rows.map((r) => {
+          const s = r[side];
+          return (
+            <tr key={r.sr}>
+              <Td strong>{r.item}</Td>
+              <Td right>{String(r.poProcessing)}</Td>
+              <Td right>{String(r.leadTime)}</Td>
+              {s ? (
+                <>
+                  <Td className="font-mono tabular-nums">{s.planned}</Td>
+                  <Td className="font-mono tabular-nums">{s.reqDate}</Td>
+                  <StatusCell text={s.reqStatus} />
+                  <StatusCell text={s.poStatus} />
+                  <StatusCell text={s.delivery} />
+                </>
+              ) : (
+                <td colSpan={5} className="px-3 py-2 text-xs text-slate-400">Not yet scheduled</td>
+              )}
+            </tr>
+          );
+        })}
+      </TableCard>
+      <TableCard title="Contractor deployment" hint={`${D.contractorDeployment.ref} · days`} head={['Contractor', 'Proc.', 'Planned', 'WO date', 'Labour', 'WO status']}>
+        {D.contractorDeployment.rows.map((r) => {
+          const s = r[side];
+          return (
+            <tr key={r.sr}>
+              <Td strong>{r.contractor}</Td>
+              <Td right>{String(r.processing)}</Td>
+              {s ? (
+                <>
+                  <Td className="font-mono tabular-nums">{s.planned}</Td>
+                  <Td className="font-mono tabular-nums">{s.wo}</Td>
+                  <StatusCell text={s.labour} />
+                  <StatusCell text={s.woStatus} />
+                </>
+              ) : (
+                <td colSpan={4} className="px-3 py-2 text-xs text-slate-400">Not yet scheduled</td>
+              )}
+            </tr>
+          );
+        })}
+      </TableCard>
+    </>
+  );
+}
+
+function ProjectTables() {
+  const months = D.monthwise.map((m) => m.month);
+  const pct = (v: number) => `${v.toFixed(2)}%`;
+  const monthRows: Array<{ label: string; values: string[]; strong?: boolean }> = [
+    { label: 'Planned', values: D.monthwise.map((m) => pct(m.planned)) },
+    { label: 'Actual', values: D.monthwise.map((m) => pct(m.actual)), strong: true },
+    { label: 'Efficiency', values: D.monthwise.map((m) => `${m.efficiency}%`) },
+    { label: 'A Bldg.', values: D.buildingWiseMonthly.map((m) => pct(m.aBldg)) },
+    { label: 'B Bldg.', values: D.buildingWiseMonthly.map((m) => pct(m.bBldg)) },
+    { label: 'Development', values: D.buildingWiseMonthly.map((m) => pct(m.dev)) },
+  ];
+  return (
+    <>
+      <TableCard title="Cost status" hint="₹ Crore · upto date" head={['', 'Budget', 'Plan %', 'Plan cost', 'Actual %', 'Actual cost', 'Effi.', 'FY spend']} rightFrom={1}>
+        {D.uptoDateStatus.map((r, i) => {
+          const fy = i === 0 ? D.statusSummary[1].actualCost.replace(' Cr.', '') : bldgInfo(BLDGS[i - 1]).fyCost;
+          return (
+            <tr key={r.project} className={r.isTotal ? 'bg-slate-50' : ''}>
+              <Td strong>{r.isTotal ? 'Nyati Elenor' : bldgInfo(BLDGS[i - 1]).label}</Td>
+              <Td right strong>{r.totalCost}</Td>
+              <Td right>{r.plannedPct}</Td>
+              <Td right>{r.plannedCost}</Td>
+              <Td right>{r.actualPct}</Td>
+              <Td right>{r.actualCost}</Td>
+              <td className="px-3 py-2 text-right">
+                <Effi value={r.efficiency} />
+              </td>
+              <Td right>{fy}</Td>
+            </tr>
+          );
+        })}
+      </TableCard>
+      <TableCard title="Monthly progress" hint="% · FY 2026-27" head={['', ...months]} rightFrom={1}>
+        {monthRows.map((r, i) => (
+          <tr key={r.label} className={i === 3 ? 'border-t-2 border-slate-200' : ''}>
+            <Td strong>{r.label}</Td>
+            {r.values.map((v, j) => (
+              <Td key={j} right strong={r.strong}>
+                {v}
+              </Td>
+            ))}
+          </tr>
+        ))}
+      </TableCard>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <TableCard title="Project" head={['', '']}>
+          {D.projectInfo.map((p) => (
+            <tr key={p.label}>
+              <Td>{p.label}</Td>
+              <Td strong>{p.value}</Td>
+            </tr>
+          ))}
+          <tr>
+            <Td>Report</Td>
+            <Td strong>{`${D.reportRef} · ${D.reportPeriod}`}</Td>
+          </tr>
+          <tr>
+            <Td>Presented by</Td>
+            <td className="px-3 py-2">
+              <span className="font-semibold text-slate-900">{D.presenter.name}</span>{' '}
+              <a href={`mailto:${D.presenter.email}`} className="text-xs text-sky-700 hover:underline">
+                {D.presenter.email}
+              </a>
+            </td>
+          </tr>
+        </TableCard>
+        <TableCard title="Period summary" head={['', 'Actual', 'Planned', 'Effi.']} rightFrom={1}>
+          {D.statusSummary.map((r) => (
+            <tr key={r.period}>
+              <Td strong>{r.period.startsWith('Upto') ? 'Upto date' : 'FY 26-27 (to Oct)'}</Td>
+              <Td right>{`${r.actualPct} · ${r.actualCost}`}</Td>
+              <Td right>{`${r.plannedPct} · ${r.plannedCost}`}</Td>
+              <td className="px-3 py-2 text-right">
+                <Effi value={r.efficiency} />
+              </td>
+            </tr>
+          ))}
+          <tr>
+            <Td strong>Open tasks</Td>
+            <Td right>{D.taskClosing.openTaskCount}</Td>
+            <Td right>{`₹${D.taskClosing.openTaskAmount}`}</Td>
+            <Td />
+          </tr>
+          <tr>
+            <Td strong>Closed in Oct</Td>
+            <Td right>{D.taskClosing.closedInMonth}</Td>
+            <Td />
+            <Td />
+          </tr>
+        </TableCard>
+      </div>
+    </>
+  );
+}
+
+function TimelineTableCard({ b }: { b?: Bldg }) {
+  const { timeline } = D;
+  const ms = b
+    ? timeline.milestones.filter((m) => m.event.startsWith(`${b} Bldg`) || m.event.startsWith('A & B'))
+    : timeline.milestones;
+  const rows: Array<[string, string]> = b
+    ? ms.map((m) => [m.date, m.event])
+    : [
+        [timeline.start, 'Project start'],
+        ...ms.map((m): [string, string] => [m.date, m.event]),
+        [timeline.current, `Status — ${timeline.currentProgress} complete (${timeline.elapsedMonths} of ${timeline.totalMonths} months)`],
+        [timeline.finish, 'Project finish'],
+      ];
+  if (!rows.length) return null;
+  return (
+    <TableCard title="Milestones" head={['Date', 'Event']}>
+      {rows.map(([d, e]) => (
+        <tr key={d + e}>
+          <Td className="whitespace-nowrap font-mono text-xs">{d}</Td>
+          <Td>{e}</Td>
+        </tr>
+      ))}
+    </TableCard>
+  );
+}
+
+const SEVERITY_TONE: Record<ElenorRiskSeverity, Tone> = { High: 'bad', Medium: 'part', Low: 'none' };
+
+function RiskTableCard({ b }: { b: ElenorBuilding }) {
+  const scope = b === 'all' ? null : b === 'Development' ? 'Development' : `${b} Bldg.`;
+  const risks = computeElenorRisks().filter((r) => scope === null || r.scope === scope);
+  return (
+    <TableCard
+      title="Risk register"
+      hint={`${risks.length} · ${(['High', 'Medium', 'Low'] as const).map((v) => `${risks.filter((r) => r.severity === v).length} ${v.toLowerCase()}`).join(' · ')}`}
+      head={['Severity', 'Risk', 'Scope', 'Next step']}
+    >
+      {risks.map((r) => (
+        <tr key={r.id}>
+          <td className="px-3 py-2 whitespace-nowrap">
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-800">
+              <Dot color={TONE[SEVERITY_TONE[r.severity]]} />
+              {r.severity}
+            </span>
+          </td>
+          <td className="px-3 py-2">
+            <span className="block font-semibold text-slate-900">{r.title}</span>
+            <span className="block text-xs text-slate-500">{r.reason}</span>
+          </td>
+          <Td className="whitespace-nowrap text-xs">{r.scope}</Td>
+          <Td className="text-xs">{r.suggestedNextStep}</Td>
+        </tr>
+      ))}
+    </TableCard>
+  );
+}
+
+function BuildingSummaryTable({ b }: { b: Bldg }) {
+  const info = bldgInfo(b);
+  const u = info.upto;
+  return (
+    <TableCard
+      title="Summary"
+      hint="₹ Crore · monthly % of building"
+      head={['', ...D.buildingWiseMonthly.map((m) => m.month)]}
+      rightFrom={1}
+    >
+      <tr>
+        <Td strong>Monthly actual</Td>
+        {D.buildingWiseMonthly.map((m) => (
+          <Td key={m.month} right>{`${m[info.monthKey].toFixed(2)}%`}</Td>
+        ))}
+      </tr>
+      <tr>
+        <td colSpan={D.buildingWiseMonthly.length + 1} className="px-3 py-2.5 text-xs text-slate-600">
+          <span className="font-semibold text-slate-900">{u.project}</span> {u.detail} · budget{' '}
+          <span className="font-mono font-semibold text-slate-900">₹{u.totalCost}</span> · planned {u.plannedPct} (₹{u.plannedCost}) · actual{' '}
+          {u.actualPct} (₹{u.actualCost}) · effi {u.efficiency} · FY spend to Oct ₹{info.fyCost}
+        </td>
+      </tr>
+    </TableCard>
+  );
+}
+
+/* ================================== Pages ================================== */
+
+function PageHeader({ title, building }: { title: string; building: ElenorBuilding }) {
+  const label = building === 'all' ? 'Whole project' : bldgInfo(building).label;
+  return (
+    <div className="flex flex-wrap items-baseline justify-between gap-2">
+      <h2 className="font-display text-xl font-semibold text-slate-900">
+        {title} <span className="text-slate-400 font-normal">· {label}</span>
+      </h2>
+      <p className="font-mono text-xs text-slate-500">
+        {D.reportRef} · upto {D.asOfDate}
+      </p>
+    </div>
+  );
+}
+
+export function ElenorDashboardPage({
+  building,
+  onSelectBuilding,
+}: {
+  building: ElenorBuilding;
+  onSelectBuilding: (b: ElenorBuilding) => void;
+}) {
+  return (
+    <div className="space-y-5">
+      <PageHeader title="Dashboard" building={building} />
+      {building === 'all' ? <ProjectOverview onSelectBuilding={onSelectBuilding} /> : <BuildingView key={building} b={building} />}
+    </div>
+  );
+}
+
+export function ElenorTablesPage({ building }: { building: ElenorBuilding }) {
+  return (
+    <div className="space-y-5">
+      <PageHeader title="Detail Tables" building={building} />
+      {building === 'all' ? (
+        <>
+          <ProjectTables />
+          <TimelineTableCard />
+          <RiskTableCard b="all" />
+        </>
+      ) : (
+        <Fragment key={building}>
+          <BuildingSummaryTable b={building} />
+          <CostTableCard b={building} />
+          <TargetsTableCard b={building} />
+          {building !== 'Development' && <TowerTables b={building} />}
+          {building !== 'Development' && <TimelineTableCard b={building} />}
+          <RiskTableCard b={building} />
+        </Fragment>
+      )}
     </div>
   );
 }

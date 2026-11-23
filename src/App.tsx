@@ -22,7 +22,7 @@ import {
   saveSiteReports,
   saveWeeklyReports,
 } from './data/evaniaData';
-import { NavItemId, PROJECTS, ProjectId, getNavItems } from './types/navigation';
+import { ELENOR_BUILDINGS, ElenorBuilding, NavItemId, PROJECTS, ProjectId, getNavItems } from './types/navigation';
 import { ELENOR_DATA } from './data/elenorData';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
@@ -51,11 +51,7 @@ const SiteReportsPage = lazy(() =>
 );
 const elenorPages = () => import('./components/pages/ElenorPage');
 const ElenorDashboardPage = lazy(() => elenorPages().then((m) => ({ default: m.ElenorDashboardPage })));
-const ElenorWorkPackagesPage = lazy(() => elenorPages().then((m) => ({ default: m.ElenorWorkPackagesPage })));
-const ElenorBudgetPage = lazy(() => elenorPages().then((m) => ({ default: m.ElenorBudgetPage })));
-const ElenorRiskPage = lazy(() => elenorPages().then((m) => ({ default: m.ElenorRiskPage })));
-const ElenorProgressPage = lazy(() => elenorPages().then((m) => ({ default: m.ElenorProgressPage })));
-const ElenorProcurementPage = lazy(() => elenorPages().then((m) => ({ default: m.ElenorProcurementPage })));
+const ElenorTablesPage = lazy(() => elenorPages().then((m) => ({ default: m.ElenorTablesPage })));
 
 function PageLoading() {
   return (
@@ -82,6 +78,12 @@ function loadInitialNav(project: ProjectId): NavItemId {
   return 'executive-dashboard';
 }
 
+function loadInitialBuilding(): ElenorBuilding {
+  // Deep link support: ?bldg=A
+  const fromUrl = readUrlParam('bldg');
+  return ELENOR_BUILDINGS.some((b) => b.id === fromUrl) ? (fromUrl as ElenorBuilding) : 'all';
+}
+
 function loadSelectedProject(): ProjectId {
   // Deep link support: ?project=elenor
   const fromUrl = readUrlParam('project');
@@ -99,6 +101,20 @@ export default function App() {
   const [activeProject, setActiveProject] = useState<ProjectId>(() => loadSelectedProject());
   const [activeNav, setActiveNav] = useState<NavItemId>(() => loadInitialNav(activeProject));
   const navItems = getNavItems(activeProject);
+  const [elenorBuilding, setElenorBuilding] = useState<ElenorBuilding>(() => loadInitialBuilding());
+
+  const handleChangeBuilding = (next: ElenorBuilding) => {
+    setElenorBuilding(next);
+    try {
+      const url = new URL(window.location.href);
+      if (next === 'all') url.searchParams.delete('bldg');
+      else url.searchParams.set('bldg', next);
+      window.history.replaceState(null, '', url);
+    } catch {
+      // ignore URL errors
+    }
+    window.scrollTo({ top: 0 });
+  };
 
   const handleChangeProject = (next: ProjectId) => {
     setActiveProject(next);
@@ -137,6 +153,16 @@ export default function App() {
   const [editPackageInitialId, setEditPackageInitialId] = useState<string | null>(
     null
   );
+
+  const [chatbotOpen, setChatbotOpen] = useState(false);
+  const [pendingChatQuery, setPendingChatQuery] = useState<string | null>(null);
+
+  const handleOpenChatbot = (query?: string) => {
+    setChatbotOpen(true);
+    if (query) {
+      setPendingChatQuery(query);
+    }
+  };
 
   const projectInfo = useMemo(
     () => getMergedProjectInfo(projectOverrides),
@@ -261,20 +287,10 @@ export default function App() {
   };
 
   const renderElenorPage = () => {
-    switch (activeNav) {
-      case 'work-packages':
-        return <ElenorWorkPackagesPage />;
-      case 'budget-boq':
-        return <ElenorBudgetPage />;
-      case 'ai-risk-center':
-        return <ElenorRiskPage />;
-      case 'progress-monitoring':
-        return <ElenorProgressPage />;
-      case 'procurement':
-        return <ElenorProcurementPage />;
-      default:
-        return <ElenorDashboardPage />;
+    if (activeNav === 'data-tables') {
+      return <ElenorTablesPage building={elenorBuilding} />;
     }
+    return <ElenorDashboardPage building={elenorBuilding} onSelectBuilding={handleChangeBuilding} />;
   };
 
   const renderPage = () => {
@@ -355,6 +371,8 @@ export default function App() {
         scope={activeProject === 'elenor' ? 'Lullanagar, Pune' : projectInfo.scope}
         projectName={PROJECTS.find((p) => p.id === activeProject)?.name ?? 'Nyati Evania'}
         navItems={navItems}
+        activeProject={activeProject}
+        onOpenChatbot={handleOpenChatbot}
       />
 
       <div className="flex-1 min-w-0 flex flex-col">
@@ -365,6 +383,8 @@ export default function App() {
           revisionDate={projectInfo.revisionDate}
           project={activeProject}
           onChangeProject={handleChangeProject}
+          building={elenorBuilding}
+          onChangeBuilding={handleChangeBuilding}
         />
 
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-[1440px] w-full mx-auto">
@@ -382,6 +402,10 @@ export default function App() {
           resolvedRiskIds,
           siteReports,
         }}
+        isOpen={chatbotOpen}
+        onOpenChange={setChatbotOpen}
+        externalQuery={pendingChatQuery}
+        onClearExternalQuery={() => setPendingChatQuery(null)}
       />
 
       <EditPackageModal

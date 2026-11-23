@@ -9,6 +9,10 @@ interface ChatbotWidgetProps {
   activeProject: ProjectId;
   activePageLabel: string;
   evania: EvaniaContextInput;
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  externalQuery?: string | null;
+  onClearExternalQuery?: () => void;
 }
 
 interface ChatMessage {
@@ -84,8 +88,21 @@ function renderFormattedMessage(text: string) {
   );
 }
 
-export function ChatbotWidget({ activeProject, activePageLabel, evania }: ChatbotWidgetProps) {
-  const [open, setOpen] = useState(false);
+export function ChatbotWidget({
+  activeProject,
+  activePageLabel,
+  evania,
+  isOpen,
+  onOpenChange,
+  externalQuery,
+  onClearExternalQuery,
+}: ChatbotWidgetProps) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = isOpen !== undefined ? isOpen : internalOpen;
+  const setOpen = (val: boolean) => {
+    setInternalOpen(val);
+    onOpenChange?.(val);
+  };
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -197,6 +214,14 @@ export function ChatbotWidget({ activeProject, activePageLabel, evania }: Chatbo
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (externalQuery && externalQuery.trim()) {
+      setOpen(true);
+      void sendQuestion(externalQuery);
+      onClearExternalQuery?.();
+    }
+  }, [externalQuery]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
