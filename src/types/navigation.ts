@@ -68,7 +68,7 @@ export const ELENOR_NAV_ITEMS: NavItemConfig[] = [
   },
   {
     id: 'data-tables',
-    label: 'Detail Tables',
+    label: 'Data',
     description: 'Exact figures from PLN/407, filtered by the selected building.',
   },
 ];
