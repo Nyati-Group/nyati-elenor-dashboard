@@ -1,4 +1,5 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Area,
   AreaChart,
@@ -22,11 +23,7 @@ import {
   XCircle,
   X,
   Search,
-  Filter,
   ShieldAlert,
-  Clock,
-  Layers,
-  TrendingUp,
   Download,
   Loader2,
 } from 'lucide-react';
@@ -225,20 +222,46 @@ function SvgDonut({
   activeSliceIndex?: number | null;
   onHoverSlice?: (idx: number | null) => void;
 }) {
+  const [mounted, setMounted] = useState(false);
   const total = slices.reduce((s, d) => s + Math.max(0, d.value), 0);
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
+
+  // Key to cleanly re-trigger smooth entrance on data changes
+  const slicesKey = slices.map((s) => s.name + s.value).join('-');
+
+  useEffect(() => {
+    setMounted(false);
+    const frame = requestAnimationFrame(() => {
+      setMounted(true);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [slicesKey]);
 
   let cumulativeOffset = 0;
   const hasActive = activeSliceIndex !== null && activeSliceIndex !== undefined && slices[activeSliceIndex] !== undefined;
   const activeSlice = hasActive ? slices[activeSliceIndex!] : null;
 
-  const displayCenterText = activeSlice ? (activeSlice.formatted ?? `${activeSlice.value}`) : centerText;
+  // When hovering a slice, show its percentage in the center hole for instant clarity
+  const activePct = activeSlice && total > 0 ? Math.round((activeSlice.value / total) * 100) : null;
+  const displayCenterText = activeSlice ? (activePct !== null ? `${activePct}%` : (activeSlice.formatted ?? `${activeSlice.value}`)) : centerText;
   const displayCenterSub = activeSlice ? activeSlice.name : centerSub;
+
+  const validSlices = slices.filter((s) => s.value > 0);
+  const gap = validSlices.length > 1 ? 1.5 : 0;
 
   return (
     <div className="relative flex items-center justify-center shrink-0" style={{ width: size, height: size }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="rotate-[-90deg]">
+      <motion.svg
+        key={slicesKey}
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        className="rotate-[-90deg] overflow-visible"
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+      >
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -251,7 +274,7 @@ function SvgDonut({
           slices.map((slice, i) => {
             if (slice.value <= 0) return null;
             const pct = slice.value / total;
-            const strokeDasharray = `${pct * circumference} ${circumference}`;
+            const targetLength = Math.max(0, pct * circumference - gap);
             const strokeDashoffset = -cumulativeOffset * circumference;
             cumulativeOffset += pct;
             const isThisActive = activeSliceIndex === i;
@@ -265,39 +288,52 @@ function SvgDonut({
                 fill="none"
                 stroke={slice.color}
                 strokeWidth={isThisActive ? strokeWidth + 2.5 : strokeWidth}
-                strokeDasharray={strokeDasharray}
+                strokeDasharray={mounted ? `${targetLength} ${circumference}` : `0 ${circumference}`}
                 strokeDashoffset={strokeDashoffset}
-                strokeLinecap="round"
+                strokeLinecap="butt"
                 onMouseEnter={() => onHoverSlice?.(i)}
                 onMouseLeave={() => onHoverSlice?.(null)}
-                className={`transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] cursor-pointer ${
+                style={{
+                  transition: `stroke-dasharray 750ms cubic-bezier(0.16, 1, 0.3, 1) ${i * 65}ms, stroke-width 220ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms ease, filter 200ms ease`,
+                  filter: isThisActive ? 'drop-shadow(0 2px 6px rgba(0,0,0,0.18))' : 'none',
+                }}
+                className={`cursor-pointer ${
                   hasActive
                     ? isThisActive
-                      ? 'opacity-100 drop-shadow-[0_2px_4px_rgba(0,0,0,0.18)]'
+                      ? 'opacity-100'
                       : 'opacity-35'
                     : 'opacity-100 hover:opacity-90'
                 }`}
               />
             );
           })}
-      </svg>
+      </motion.svg>
       {Boolean(displayCenterText || displayCenterSub) && (
-        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center px-1 transition-all duration-150">
-          <span className="font-mono text-xs font-bold text-slate-900 leading-tight">
-            {displayCenterText}
-          </span>
-          {displayCenterSub && (
-            <span className="text-[9px] font-medium text-slate-500 leading-tight truncate max-w-[64px]">
-              {displayCenterSub}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={displayCenterText + (displayCenterSub ?? '')}
+            initial={{ opacity: 0, scale: 0.92 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.92 }}
+            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+            className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center px-1"
+          >
+            <span className="font-mono text-xs font-bold text-slate-900 leading-tight">
+              {displayCenterText}
             </span>
-          )}
-        </div>
+            {displayCenterSub && (
+              <span className="text-[9px] font-medium text-slate-500 leading-tight truncate max-w-[56px]">
+                {displayCenterSub}
+              </span>
+            )}
+          </motion.div>
+        </AnimatePresence>
       )}
     </div>
   );
 }
 
-function getKpiDonutData(label: string, building: ElenorBuilding = 'all', valueStr?: string): KpiDonutData | null {
+function getKpiDonutData(label: string, building: ElenorBuilding = 'all', _valueStr?: string): KpiDonutData | null {
   const normalized = label.toLowerCase();
 
   // 1. PROGRESS
@@ -570,16 +606,37 @@ function getKpiDonutData(label: string, building: ElenorBuilding = 'all', valueS
 function KpiCard({
   it,
   building = 'all',
+  index = 0,
 }: {
   it: { label: string; value: string; sub?: string; tone?: Tone };
   building?: ElenorBuilding;
+  index?: number;
 }) {
   const [hoveredSlice, setHoveredSlice] = useState<number | null>(null);
   const donutData = getKpiDonutData(it.label, building, it.value);
   const total = donutData ? donutData.slices.reduce((s, d) => s + Math.max(0, d.value), 0) : 0;
 
   return (
-    <div className="group relative flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white/95 p-3.5 sm:p-4 shadow-[0_1px_3px_rgba(0,0,0,0.03),0_6px_16px_rgba(0,0,0,0.02)] hover:border-slate-300 hover:shadow-xs transition-all duration-200">
+    <motion.div
+      variants={{
+        hidden: { opacity: 0, y: 12, scale: 0.98 },
+        visible: {
+          opacity: 1,
+          y: 0,
+          scale: 1,
+          transition: {
+            duration: 0.32,
+            ease: [0.16, 1, 0.3, 1],
+            delay: index * 0.03,
+          },
+        },
+      }}
+      whileHover={{
+        y: -3,
+        transition: { duration: 0.2, ease: [0.16, 1, 0.3, 1] },
+      }}
+      className="group relative flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white/95 p-3.5 sm:p-4 shadow-[0_1px_3px_rgba(0,0,0,0.03),0_6px_16px_rgba(0,0,0,0.02)] hover:border-slate-300 hover:shadow-[0_4px_16px_rgba(0,0,0,0.06),0_1px_3px_rgba(0,0,0,0.03)] transition-all duration-200"
+    >
       {/* Top Header: Label & Tone Indicator */}
       <div className="flex items-center justify-between gap-1 w-full">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 truncate">
@@ -662,7 +719,7 @@ function KpiCard({
           )}
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }
 
@@ -676,25 +733,46 @@ function StatStrip({
   const lgCols = items.length === 4 ? 'lg:grid-cols-4 sm:grid-cols-4' : 'lg:grid-cols-6 sm:grid-cols-3';
 
   return (
-    <div className={`grid grid-cols-2 ${lgCols} gap-3 sm:gap-3.5`}>
-      {items.map((it) => (
-        <KpiCard key={it.label} it={it} building={building} />
+    <motion.div
+      initial="hidden"
+      animate="visible"
+      variants={{
+        hidden: { opacity: 0 },
+        visible: {
+          opacity: 1,
+          transition: {
+            staggerChildren: 0.04,
+          },
+        },
+      }}
+      className={`grid grid-cols-2 ${lgCols} gap-3 sm:gap-3.5`}
+    >
+      {items.map((it, idx) => (
+        <KpiCard key={it.label} it={it} building={building} index={idx} />
       ))}
-    </div>
+    </motion.div>
   );
 }
 
 /** Bullet: actual fill with a planned tick, on a 0–max track. */
 function Bullet({ actual, planned, max }: { actual: number; planned: number; max: number }) {
+  const actualWidth = `${Math.min(100, (actual / max) * 100)}%`;
+  const plannedLeft = `${Math.min(100, (planned / max) * 100)}%`;
   return (
-    <div className="relative h-2 rounded-full bg-slate-100" role="img" aria-label={`Actual ${actual}%, planned ${planned}%`}>
-      <div
+    <div className="relative h-2 rounded-full bg-slate-100 overflow-hidden" role="img" aria-label={`Actual ${actual}%, planned ${planned}%`}>
+      <motion.div
+        initial={{ width: 0 }}
+        animate={{ width: actualWidth }}
+        transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
         className="absolute inset-y-0 left-0 rounded-full"
-        style={{ width: `${Math.min(100, (actual / max) * 100)}%`, backgroundColor: C.actual }}
+        style={{ backgroundColor: C.actual }}
       />
-      <div
-        className="absolute -top-1 -bottom-1 w-0.5 rounded-full bg-slate-500"
-        style={{ left: `${Math.min(100, (planned / max) * 100)}%` }}
+      <motion.div
+        initial={{ opacity: 0, scaleY: 0 }}
+        animate={{ opacity: 1, scaleY: 1 }}
+        transition={{ duration: 0.4, delay: 0.35, ease: [0.16, 1, 0.3, 1] }}
+        className="absolute -top-1 -bottom-1 w-0.5 rounded-full bg-slate-500 z-10"
+        style={{ left: plannedLeft }}
       />
     </div>
   );
@@ -793,40 +871,34 @@ function ProjectMonthlyChart() {
       }
       action={
         <div className="flex flex-wrap items-center gap-3">
-          <div className="inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
-            <button
-              type="button"
-              onClick={() => setChartView('progress')}
-              className={`rounded-lg px-3 py-1.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
-                chartView === 'progress'
-                  ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              Progress %
-            </button>
-            <button
-              type="button"
-              onClick={() => setChartView('scurve')}
-              className={`rounded-lg px-3 py-1.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
-                chartView === 'scurve'
-                  ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              S-Curve (₹ Cr)
-            </button>
-            <button
-              type="button"
-              onClick={() => setChartView('spend')}
-              className={`rounded-lg px-3 py-1.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
-                chartView === 'spend'
-                  ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              Spend (₹ Cr)
-            </button>
+          <div className="relative inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
+            {(['progress', 'scurve', 'spend'] as const).map((viewKey) => {
+              const isSelected = chartView === viewKey;
+              const labels = {
+                progress: 'Progress %',
+                scurve: 'S-Curve (₹ Cr)',
+                spend: 'Spend (₹ Cr)',
+              };
+              return (
+                <button
+                  key={viewKey}
+                  type="button"
+                  onClick={() => setChartView(viewKey)}
+                  className={`relative rounded-lg px-3 py-1.5 transition-colors duration-200 active:scale-[0.97] cursor-pointer ${
+                    isSelected ? 'text-slate-900 font-semibold' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {isSelected && (
+                    <motion.div
+                      layoutId="projectChartViewPill"
+                      transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                      className="absolute inset-0 rounded-lg bg-white shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)]"
+                    />
+                  )}
+                  <span className="relative z-10">{labels[viewKey]}</span>
+                </button>
+              );
+            })}
           </div>
           <div className="hidden sm:flex gap-3">
             <Swatch color={C.actual} label="Actual" />
@@ -845,7 +917,9 @@ function ProjectMonthlyChart() {
                 <YAxis tick={AXIS_TICK} tickFormatter={(v) => `${v}%`} domain={[0, 1.6]} tickLine={false} axisLine={false} />
                 <Tooltip content={MonthTooltip} cursor={{ stroke: '#94A3B8', strokeDasharray: '3 3' }} />
                 <Line
-                  isAnimationActive={false}
+                  isAnimationActive={true}
+                  animationDuration={900}
+                  animationEasing="ease-out"
                   dataKey="planned"
                   name="Planned"
                   stroke={C.plan}
@@ -856,7 +930,10 @@ function ProjectMonthlyChart() {
                   label={lastLabel(last)}
                 />
                 <Line
-                  isAnimationActive={false}
+                  isAnimationActive={true}
+                  animationDuration={1000}
+                  animationBegin={120}
+                  animationEasing="ease-out"
                   dataKey="actual"
                   name="Actual"
                   stroke={C.actual}
@@ -879,7 +956,9 @@ function ProjectMonthlyChart() {
                   <XAxis dataKey="month" hide />
                   <YAxis domain={[0, 100]} tick={false} tickLine={false} axisLine={false} />
                   <Line
-                    isAnimationActive={false}
+                    isAnimationActive={true}
+                    animationDuration={800}
+                    animationEasing="ease-out"
                     dataKey="efficiency"
                     stroke={C.context}
                     strokeWidth={1.5}
@@ -935,7 +1014,10 @@ function ProjectMonthlyChart() {
                 }}
               />
               <Area
-                isAnimationActive={false}
+                isAnimationActive={true}
+                animationDuration={950}
+                animationBegin={100}
+                animationEasing="ease-out"
                 type="monotone"
                 dataKey="cumActual"
                 name="Actual Spend"
@@ -946,7 +1028,9 @@ function ProjectMonthlyChart() {
                 activeDot={{ r: 5 }}
               />
               <Line
-                isAnimationActive={false}
+                isAnimationActive={true}
+                animationDuration={850}
+                animationEasing="ease-out"
                 type="monotone"
                 dataKey="cumPlanned"
                 name="Planned Spend"
@@ -992,8 +1076,8 @@ function ProjectMonthlyChart() {
                   );
                 }}
               />
-              <Bar isAnimationActive={false} dataKey="plannedSpend" name="Planned" fill={C.context} radius={[3, 3, 0, 0]} />
-              <Bar isAnimationActive={false} dataKey="actualSpend" name="Actual" fill={C.actual} radius={[3, 3, 0, 0]} />
+              <Bar isAnimationActive={true} animationDuration={800} animationEasing="ease-out" dataKey="plannedSpend" name="Planned" fill={C.context} radius={[3, 3, 0, 0]} />
+              <Bar isAnimationActive={true} animationDuration={900} animationBegin={120} animationEasing="ease-out" dataKey="actualSpend" name="Actual" fill={C.actual} radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -1021,7 +1105,7 @@ function BuildingMonthlyChart({ b }: { b: Bldg }) {
             <XAxis dataKey="month" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: C.grid }} />
             <YAxis tick={AXIS_TICK} tickFormatter={(v) => `${v}%`} tickLine={false} axisLine={false} />
             <Tooltip formatter={(v) => [`${Number(v).toFixed(2)}%`, 'Actual']} contentStyle={TIP} cursor={{ fill: '#F1F5F9' }} />
-            <Bar isAnimationActive={false} dataKey="v" fill={C.actual} radius={[4, 4, 0, 0]} maxBarSize={26}>
+            <Bar isAnimationActive={true} animationDuration={850} animationEasing="ease-out" dataKey="v" fill={C.actual} radius={[4, 4, 0, 0]} maxBarSize={26}>
               <LabelList
                 dataKey="v"
                 position="top"
@@ -1093,23 +1177,44 @@ function ScheduleBar() {
 
       <div className="relative mt-3 pt-6">
         {/* Today pin */}
-        <div className="pointer-events-none absolute top-0 z-10 flex h-[46px] -translate-x-1/2 flex-col items-center" style={{ left: `${timePct}%` }}>
-          <span className="whitespace-nowrap rounded bg-[#0F1E36] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-white">
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.35, ease: [0.16, 1, 0.3, 1] }}
+          className="pointer-events-none absolute top-0 z-10 flex h-[46px] -translate-x-1/2 flex-col items-center"
+          style={{ left: `${timePct}%` }}
+        >
+          <span className="whitespace-nowrap rounded bg-[#0F1E36] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-white shadow-xs">
             {shortMonth(timeline.current)}
           </span>
           <span className="w-px flex-1 bg-[#0F1E36]" />
-        </div>
+        </motion.div>
 
         <div
           className="relative h-5 overflow-hidden rounded-full bg-slate-100 ring-1 ring-inset ring-slate-200"
           role="img"
           aria-label={`Time elapsed ${Math.round(timePct)}%, planned ${total.plannedPct}, actual ${total.actualPct}`}
         >
-          <div className="absolute inset-y-0 left-0" style={{ width: `${timePct}%`, background: stripes }} />
-          <div className="absolute inset-y-0 left-0 rounded-r-full" style={{ width: `${plan}%`, backgroundColor: C.plan }} />
-          <div
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${timePct}%` }}
+            transition={{ duration: 0.85, ease: [0.16, 1, 0.3, 1] }}
+            className="absolute inset-y-0 left-0"
+            style={{ background: stripes }}
+          />
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${plan}%` }}
+            transition={{ duration: 0.9, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+            className="absolute inset-y-0 left-0 rounded-r-full"
+            style={{ backgroundColor: C.plan }}
+          />
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${act}%` }}
+            transition={{ duration: 0.95, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
             className="absolute inset-y-0 left-0 rounded-r-full shadow-[2px_0_0_0_#fff]"
-            style={{ width: `${act}%`, background: `linear-gradient(90deg, #6aa6ea, ${C.actual})` }}
+            style={{ background: `linear-gradient(90deg, #6aa6ea, ${C.actual})` }}
           />
         </div>
 
@@ -1200,10 +1305,10 @@ function SpendByBuildingChart() {
             />
             <YAxis tick={AXIS_TICK} tickLine={false} axisLine={false} />
             <Tooltip formatter={(v, n) => [`₹${cr(v)} Cr`, n]} contentStyle={TIP} cursor={{ fill: '#F1F5F9' }} />
-            <Bar isAnimationActive={false} dataKey="planned" name="Planned" fill={C.plan} radius={[4, 4, 0, 0]} maxBarSize={28}>
+            <Bar isAnimationActive={true} animationDuration={800} animationEasing="ease-out" dataKey="planned" name="Planned" fill={C.plan} radius={[4, 4, 0, 0]} maxBarSize={28}>
               <LabelList dataKey="planned" position="top" formatter={cr} style={{ fontSize: 10, fill: '#64748B' }} />
             </Bar>
-            <Bar isAnimationActive={false} dataKey="actual" name="Actual" fill={C.actual} radius={[4, 4, 0, 0]} maxBarSize={28}>
+            <Bar isAnimationActive={true} animationDuration={900} animationBegin={120} animationEasing="ease-out" dataKey="actual" name="Actual" fill={C.actual} radius={[4, 4, 0, 0]} maxBarSize={28}>
               <LabelList dataKey="actual" position="top" formatter={cr} style={{ fontSize: 10, fill: '#0F172A', fontWeight: 600 }} />
             </Bar>
           </BarChart>
@@ -1218,10 +1323,12 @@ function BuildingCard({ b, onSelect }: { b: Bldg; onSelect: (b: Bldg) => void })
   const t = targetCounts(info.targets);
   const spark = D.buildingWiseMonthly.map((m) => ({ month: m.month, v: m[info.monthKey] }));
   return (
-    <button
+    <motion.button
       type="button"
       onClick={() => onSelect(b)}
-      className="group flex flex-col justify-start text-left rounded-2xl border border-slate-200/80 bg-white/90 backdrop-blur-md p-4 sm:p-5 shadow-[0_1px_3px_rgba(0,0,0,0.03),0_6px_16px_rgba(0,0,0,0.02)] hover:border-slate-300 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] active:scale-[0.99] transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
+      whileHover={{ y: -3, transition: { type: 'spring', stiffness: 400, damping: 25 } }}
+      whileTap={{ scale: 0.98 }}
+      className="group flex flex-col justify-start text-left rounded-2xl border border-slate-200/80 bg-white/90 backdrop-blur-md p-4 sm:p-5 shadow-[0_1px_3px_rgba(0,0,0,0.03),0_6px_16px_rgba(0,0,0,0.02)] hover:border-slate-300 hover:shadow-[0_4px_16px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 cursor-pointer"
     >
       <div className="flex items-center justify-between gap-2">
         <p className="font-display text-sm font-semibold text-slate-900">{info.label}</p>
@@ -1250,7 +1357,9 @@ function BuildingCard({ b, onSelect }: { b: Bldg; onSelect: (b: Bldg) => void })
             />
             <XAxis dataKey="month" hide />
             <Area
-              isAnimationActive={false}
+              isAnimationActive={true}
+              animationDuration={800}
+              animationEasing="ease-out"
               dataKey="v"
               stroke={C.actual}
               strokeWidth={2}
@@ -1284,7 +1393,7 @@ function BuildingCard({ b, onSelect }: { b: Bldg; onSelect: (b: Bldg) => void })
           </span>
         )}
       </div>
-    </button>
+    </motion.button>
   );
 }
 
@@ -1315,8 +1424,22 @@ function RiskDrawer({ onClose }: { onClose: () => void }) {
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/30 backdrop-blur-md transition-opacity duration-300 animate-in fade-in">
-      <div className="relative flex h-full w-full max-w-2xl flex-col bg-white/95 backdrop-blur-xl border-l border-slate-200/80 shadow-[0_0_50px_rgba(0,0,0,0.15)] sm:rounded-l-3xl overflow-hidden transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]">
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex justify-end bg-slate-950/30 backdrop-blur-md"
+    >
+      <motion.div
+        initial={{ x: '100%' }}
+        animate={{ x: 0 }}
+        exit={{ x: '100%' }}
+        transition={{ type: 'spring', stiffness: 320, damping: 32 }}
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex h-full w-full max-w-2xl flex-col bg-white/95 backdrop-blur-xl border-l border-slate-200/80 shadow-[0_0_50px_rgba(0,0,0,0.15)] sm:rounded-l-3xl overflow-hidden"
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200/80 px-6 py-4.5 bg-white/80 backdrop-blur-md">
           <div>
@@ -1452,8 +1575,8 @@ function RiskDrawer({ onClose }: { onClose: () => void }) {
             })
           )}
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -1522,7 +1645,9 @@ function AttentionCard() {
           ))}
         </div>
       </Card>
-      {openDrawer && <RiskDrawer onClose={() => setOpenDrawer(false)} />}
+      <AnimatePresence>
+        {openDrawer && <RiskDrawer onClose={() => setOpenDrawer(false)} />}
+      </AnimatePresence>
     </>
   );
 }
@@ -1685,20 +1810,27 @@ function CrossWingProcurementMatrix() {
       title="Supply & Contractors · Cross-Wing Readiness Heatmap"
       hint="Procurement pipeline & contractor deployment across Wing A and Wing B · PLN/409 & PLN/410"
       action={
-        <div className="inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
+        <div className="relative inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
           <button
             type="button"
             onClick={() => {
               setTab('contractors');
               setFilterStage('all');
             }}
-            className={`rounded-lg px-3 py-1.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+            className={`relative rounded-lg px-3 py-1.5 transition-colors duration-200 active:scale-[0.97] cursor-pointer ${
               tab === 'contractors'
-                ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
+                ? 'text-slate-900 font-semibold'
                 : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            Contractor Deployment (PLN/410)
+            {tab === 'contractors' && (
+              <motion.div
+                layoutId="procurementTabPill"
+                transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                className="absolute inset-0 rounded-lg bg-white shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)]"
+              />
+            )}
+            <span className="relative z-10">Contractor Deployment (PLN/410)</span>
           </button>
           <button
             type="button"
@@ -1706,23 +1838,32 @@ function CrossWingProcurementMatrix() {
               setTab('materials');
               setFilterStage('all');
             }}
-            className={`rounded-lg px-3 py-1.5 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
+            className={`relative rounded-lg px-3 py-1.5 transition-colors duration-200 active:scale-[0.97] cursor-pointer ${
               tab === 'materials'
-                ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
+                ? 'text-slate-900 font-semibold'
                 : 'text-slate-500 hover:text-slate-800'
             }`}
           >
-            Bulk Materials (PLN/409)
+            {tab === 'materials' && (
+              <motion.div
+                layoutId="procurementTabPill"
+                transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                className="absolute inset-0 rounded-lg bg-white shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)]"
+              />
+            )}
+            <span className="relative z-10">Bulk Materials (PLN/409)</span>
           </button>
         </div>
       }
     >
       {/* 4 Pipeline Funnel Cards - Restrained, executive-grade palette */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-3.5">
-        <button
+        <motion.button
           type="button"
+          whileHover={{ y: -2, transition: { type: 'spring', stiffness: 400, damping: 25 } }}
+          whileTap={{ scale: 0.98 }}
           onClick={() => setFilterStage(filterStage === 'active' ? 'all' : 'active')}
-          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] cursor-pointer ${
             filterStage === 'active'
               ? 'border-emerald-600/80 bg-emerald-50/70 ring-2 ring-emerald-500/20 shadow-xs'
               : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
@@ -1734,12 +1875,14 @@ function CrossWingProcurementMatrix() {
           </div>
           <div className="mt-1 text-lg font-bold font-mono text-slate-900">{counts.active} Trades</div>
           <div className="text-[10px] text-slate-500">Fully deployed & WO done</div>
-        </button>
+        </motion.button>
 
-        <button
+        <motion.button
           type="button"
+          whileHover={{ y: -2, transition: { type: 'spring', stiffness: 400, damping: 25 } }}
+          whileTap={{ scale: 0.98 }}
           onClick={() => setFilterStage(filterStage === 'mobilising' ? 'all' : 'mobilising')}
-          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] cursor-pointer ${
             filterStage === 'mobilising'
               ? 'border-amber-600/80 bg-amber-50/70 ring-2 ring-amber-500/20 shadow-xs'
               : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
@@ -1751,12 +1894,14 @@ function CrossWingProcurementMatrix() {
           </div>
           <div className="mt-1 text-lg font-bold font-mono text-slate-900">{counts.mobilising} Trades</div>
           <div className="text-[10px] text-slate-500">Part given / Part done</div>
-        </button>
+        </motion.button>
 
-        <button
+        <motion.button
           type="button"
+          whileHover={{ y: -2, transition: { type: 'spring', stiffness: 400, damping: 25 } }}
+          whileTap={{ scale: 0.98 }}
           onClick={() => setFilterStage(filterStage === 'action' ? 'all' : 'action')}
-          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] cursor-pointer ${
             filterStage === 'action'
               ? 'border-rose-600/80 bg-rose-50/70 ring-2 ring-rose-500/20 shadow-xs'
               : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
@@ -1768,12 +1913,14 @@ function CrossWingProcurementMatrix() {
           </div>
           <div className="mt-1 text-lg font-bold font-mono text-rose-700">{counts.action} Trades</div>
           <div className="text-[10px] text-slate-500">Requisition / PO overdue</div>
-        </button>
+        </motion.button>
 
-        <button
+        <motion.button
           type="button"
+          whileHover={{ y: -2, transition: { type: 'spring', stiffness: 400, damping: 25 } }}
+          whileTap={{ scale: 0.98 }}
           onClick={() => setFilterStage(filterStage === 'future' ? 'all' : 'future')}
-          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.98] ${
+          className={`rounded-xl border p-2.5 text-left transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] cursor-pointer ${
             filterStage === 'future'
               ? 'border-slate-700 bg-slate-100 ring-2 ring-slate-400/20 shadow-xs'
               : 'border-slate-200/80 bg-white/90 hover:border-slate-300 hover:shadow-2xs'
@@ -1785,7 +1932,7 @@ function CrossWingProcurementMatrix() {
           </div>
           <div className="mt-1 text-lg font-bold font-mono text-slate-900">{counts.future} Trades</div>
           <div className="text-[10px] text-slate-500">Subsequent project phases</div>
-        </button>
+        </motion.button>
       </div>
 
       {/* Filter and search bar */}
@@ -2146,23 +2293,41 @@ function TowerChart({ rows }: { rows: ElenorTargetRow[] }) {
                   aria-label={`${d.r.activity}: ${d.r.statusOct}; Oct target ${d.r.targetOct}; Dec target ${d.r.targetDec}`}
                 >
                   {d.dec !== null && (
-                    <div className="absolute left-[12%] right-[12%] border-t-2 border-dashed" style={{ bottom: pos(d.dec), borderColor: C.plan }} />
+                    <motion.div
+                      initial={{ scaleX: 0, opacity: 0 }}
+                      animate={{ scaleX: 1, opacity: 1 }}
+                      transition={{ duration: 0.45, delay: i * 0.03 + 0.15, ease: [0.16, 1, 0.3, 1] }}
+                      className="absolute left-[12%] right-[12%] border-t-2 border-dashed origin-left"
+                      style={{ bottom: pos(d.dec), borderColor: C.plan }}
+                    />
                   )}
                   {d.oct !== null && (
-                    <div className="absolute left-[12%] right-[12%] h-0.5 bg-slate-900" style={{ bottom: pos(d.oct) }} />
+                    <motion.div
+                      initial={{ scaleX: 0, opacity: 0 }}
+                      animate={{ scaleX: 1, opacity: 1 }}
+                      transition={{ duration: 0.45, delay: i * 0.03 + 0.1, ease: [0.16, 1, 0.3, 1] }}
+                      className="absolute left-[12%] right-[12%] h-0.5 bg-slate-900 origin-left"
+                      style={{ bottom: pos(d.oct) }}
+                    />
                   )}
                   {d.done !== null && (
                     <>
-                      <div
+                      <motion.div
+                        initial={{ height: 0 }}
+                        animate={{ height: pos(d.done) }}
+                        transition={{ duration: 0.8, delay: i * 0.04, ease: [0.16, 1, 0.3, 1] }}
                         className="absolute bottom-0 left-[28%] right-[28%] rounded-t"
-                        style={{ height: pos(d.done), backgroundColor: C.actual }}
+                        style={{ backgroundColor: C.actual }}
                       />
-                      <span
+                      <motion.span
+                        initial={{ opacity: 0, y: 4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.35, delay: i * 0.04 + 0.3, ease: [0.16, 1, 0.3, 1] }}
                         className="absolute inset-x-0 text-center font-mono text-[10px] font-semibold text-slate-900"
                         style={{ bottom: `calc(${pos(d.done)} + 2px)` }}
                       >
                         {d.done}
-                      </span>
+                      </motion.span>
                     </>
                   )}
                 </div>
@@ -2246,13 +2411,31 @@ function TaskGroupDots({ rows }: { rows: ElenorCostRow[] }) {
               </span>
               <div className="relative h-4">
                 <div className="absolute inset-x-0 top-1/2 h-px bg-slate-100" />
-                <div className="absolute top-1/2 h-0.5 -translate-y-1/2 bg-slate-300" style={{ left: `${lo}%`, width: `${hi - lo}%` }} />
-                <span className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: `${Math.min(planned, 100)}%` }}>
+                <motion.div
+                  initial={{ scaleX: 0, opacity: 0 }}
+                  animate={{ scaleX: 1, opacity: 1 }}
+                  transition={{ duration: 0.5, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+                  className="absolute top-1/2 h-0.5 -translate-y-1/2 bg-slate-300 origin-left"
+                  style={{ left: `${lo}%`, width: `${hi - lo}%` }}
+                />
+                <motion.span
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: 'spring', stiffness: 450, damping: 25, delay: 0.15 }}
+                  className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
+                  style={{ left: `${Math.min(planned, 100)}%` }}
+                >
                   <Dot color="#64748B" ring />
-                </span>
-                <span className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: `${Math.min(actual, 100)}%` }}>
-                  <span className="block h-2.5 w-2.5 rounded-full ring-2 ring-white" style={{ backgroundColor: C.actual }} />
-                </span>
+                </motion.span>
+                <motion.span
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: 'spring', stiffness: 450, damping: 25, delay: 0.2 }}
+                  className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
+                  style={{ left: `${Math.min(actual, 100)}%` }}
+                >
+                  <span className="block h-2.5 w-2.5 rounded-full ring-2 ring-white shadow-2xs" style={{ backgroundColor: C.actual }} />
+                </motion.span>
               </div>
               <span className="text-right">
                 <Effi value={r.efficiency} />
@@ -2393,40 +2576,66 @@ function BudgetMap({ rows, building }: { rows?: ElenorCostRow[]; building?: Elen
       action={
         <div className="flex flex-wrap items-center gap-2">
           {(!building || building === 'all') && (
-            <div className="inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
-              {(['all', 'A', 'B', 'Development'] as const).map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => setScope(s)}
-                  className={`rounded-lg px-2.5 py-1 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
-                    scope === s ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold' : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  {s === 'all' ? 'Project Total' : s === 'Development' ? 'Dev' : `${s} Bldg`}
-                </button>
-              ))}
+            <div className="relative inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
+              {(['all', 'A', 'B', 'Development'] as const).map((s) => {
+                const isSelected = scope === s;
+                return (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setScope(s)}
+                    className={`relative rounded-lg px-2.5 py-1 transition-colors duration-200 active:scale-[0.97] cursor-pointer ${
+                      isSelected ? 'text-slate-900 font-semibold' : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    {isSelected && (
+                      <motion.div
+                        layoutId="budgetScopePill"
+                        transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                        className="absolute inset-0 rounded-lg bg-white shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)]"
+                      />
+                    )}
+                    <span className="relative z-10">
+                      {s === 'all' ? 'Project Total' : s === 'Development' ? 'Dev' : `${s} Bldg`}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
 
-          <div className="inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
+          <div className="relative inline-flex rounded-xl border border-slate-200/80 bg-slate-100/90 p-1 text-xs font-medium backdrop-blur-xs shadow-2xs">
             <button
               type="button"
               onClick={() => setViewMode('top10')}
-              className={`rounded-lg px-2.5 py-1 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
-                viewMode === 'top10' ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold' : 'text-slate-500 hover:text-slate-800'
+              className={`relative rounded-lg px-2.5 py-1 transition-colors duration-200 active:scale-[0.97] cursor-pointer ${
+                viewMode === 'top10' ? 'text-slate-900 font-semibold' : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              Top 10 Pareto ({paretoPct}%)
+              {viewMode === 'top10' && (
+                <motion.div
+                  layoutId="budgetViewPill"
+                  transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                  className="absolute inset-0 rounded-lg bg-white shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)]"
+                />
+              )}
+              <span className="relative z-10">Top 10 Pareto ({paretoPct}%)</span>
             </button>
             <button
               type="button"
               onClick={() => setViewMode('all')}
-              className={`rounded-lg px-2.5 py-1 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] ${
-                viewMode === 'all' ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold' : 'text-slate-500 hover:text-slate-800'
+              className={`relative rounded-lg px-2.5 py-1 transition-colors duration-200 active:scale-[0.97] cursor-pointer ${
+                viewMode === 'all' ? 'text-slate-900 font-semibold' : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              All ({items.length})
+              {viewMode === 'all' && (
+                <motion.div
+                  layoutId="budgetViewPill"
+                  transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                  className="absolute inset-0 rounded-lg bg-white shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)]"
+                />
+              )}
+              <span className="relative z-10">All ({items.length})</span>
             </button>
           </div>
         </div>
@@ -2487,7 +2696,12 @@ function BudgetMap({ rows, building }: { rows?: ElenorCostRow[]; building?: Elen
           const unspent = Math.max(0, item.base - item.actualCost);
 
           return (
-            <div
+            <motion.div
+              layout
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
               key={item.fullName}
               className="rounded-xl border border-slate-200/80 bg-white/95 p-3 hover:border-slate-300 hover:shadow-xs transition-all duration-150"
             >
@@ -2542,16 +2756,19 @@ function BudgetMap({ rows, building }: { rows?: ElenorCostRow[]; building?: Elen
                 title={`Baseline: ₹${lacs(item.base)} L | Actual: ₹${lacs(item.actualCost)} L (${item.actualPct.toFixed(1)}%) | Planned: ₹${lacs(item.plannedCost)} L (${item.plannedPct.toFixed(1)}%)`}
               >
                 {/* Actual Spend Fill */}
-                <div
-                  className="h-full rounded-l-full transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]"
-                  style={{
-                    width: `${Math.min(100, Math.max(0, item.actualPct))}%`,
-                    backgroundColor: C.actual,
-                  }}
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.min(100, Math.max(0, item.actualPct))}%` }}
+                  transition={{ duration: 0.8, delay: 0.05, ease: [0.16, 1, 0.3, 1] }}
+                  className="h-full rounded-l-full"
+                  style={{ backgroundColor: C.actual }}
                 />
                 {/* Planned Target Marker Line */}
                 {item.plannedPct > 0 && (
-                  <div
+                  <motion.div
+                    initial={{ opacity: 0, scaleY: 0 }}
+                    animate={{ opacity: 1, scaleY: 1 }}
+                    transition={{ duration: 0.4, delay: 0.3, ease: [0.16, 1, 0.3, 1] }}
                     className="absolute top-0 bottom-0 w-0.5 bg-slate-800 -translate-x-1/2 z-10"
                     style={{ left: `${Math.min(100, item.plannedPct)}%` }}
                     title={`Planned Target: ${item.plannedPct.toFixed(1)}% (₹${lacs(item.plannedCost)} L)`}
@@ -2578,7 +2795,7 @@ function BudgetMap({ rows, building }: { rows?: ElenorCostRow[]; building?: Elen
                   )}
                 </div>
               </div>
-            </div>
+            </motion.div>
           );
         })}
       </div>
@@ -2681,9 +2898,23 @@ function AluformChart({ b }: { b: 'A' | 'B' }) {
               labelFormatter={(t) => new Date(Number(t)).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
               formatter={(v, n) => [`Floor ${v}`, n]}
             />
-            <Line isAnimationActive={false} data={theirs} dataKey="floor" name={`${other} Bldg.`} stroke={C.context} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
             <Line
-              isAnimationActive={false}
+              isAnimationActive={true}
+              animationDuration={850}
+              animationEasing="ease-out"
+              data={theirs}
+              dataKey="floor"
+              name={`${other} Bldg.`}
+              stroke={C.context}
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4 }}
+            />
+            <Line
+              isAnimationActive={true}
+              animationDuration={950}
+              animationBegin={120}
+              animationEasing="ease-out"
               data={mine}
               dataKey="floor"
               name={`${b} Bldg.`}
@@ -3641,7 +3872,21 @@ export function ElenorDashboardPage({
   return (
     <div className="space-y-5">
       <PageHeader title="Dashboard" building={building} />
-      {building === 'all' ? <ProjectOverview onSelectBuilding={onSelectBuilding} /> : <BuildingView key={building} b={building} />}
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={building}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+        >
+          {building === 'all' ? (
+            <ProjectOverview onSelectBuilding={onSelectBuilding} />
+          ) : (
+            <BuildingView b={building} />
+          )}
+        </motion.div>
+      </AnimatePresence>
     </div>
   );
 }
@@ -3650,22 +3895,32 @@ export function ElenorTablesPage({ building }: { building: ElenorBuilding }) {
   return (
     <div className="space-y-5">
       <PageHeader title="Data" building={building} action={<ExportPptxButton />} />
-      {building === 'all' ? (
-        <>
-          <ProjectTables />
-          <TimelineTableCard />
-          <RiskTableCard b="all" />
-        </>
-      ) : (
-        <Fragment key={building}>
-          <BuildingSummaryTable b={building} />
-          <CostTableCard b={building} />
-          <TargetsTableCard b={building} />
-          {building !== 'Development' && <TowerTables b={building} />}
-          {building !== 'Development' && <TimelineTableCard b={building} />}
-          <RiskTableCard b={building} />
-        </Fragment>
-      )}
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={building}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+        >
+          {building === 'all' ? (
+            <>
+              <ProjectTables />
+              <TimelineTableCard />
+              <RiskTableCard b="all" />
+            </>
+          ) : (
+            <>
+              <BuildingSummaryTable b={building} />
+              <CostTableCard b={building} />
+              <TargetsTableCard b={building} />
+              {building !== 'Development' && <TowerTables b={building} />}
+              {building !== 'Development' && <TimelineTableCard b={building} />}
+              <RiskTableCard b={building} />
+            </>
+          )}
+        </motion.div>
+      </AnimatePresence>
     </div>
   );
 }

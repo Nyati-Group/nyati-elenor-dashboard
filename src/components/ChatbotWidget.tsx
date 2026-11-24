@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Send, Trash2, X } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 
 const NYATI_LOGO = '/assets/nyati-logo.jpg';
 import { ProjectId, PROJECTS } from '../types/navigation';
@@ -232,26 +233,39 @@ export function ChatbotWidget({
 
   return (
     <div className="no-print">
-      {/* Launcher */}
-      {!open && (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          aria-label="Open AI assistant"
-          title="AI Assistant"
-          className="fixed bottom-5 right-5 z-40 flex h-14 w-14 items-center justify-center overflow-hidden rounded-full bg-white p-1 ring-2 ring-[#0F1E36] shadow-lg shadow-slate-900/25 hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 transition-transform"
-        >
-          <img src={NYATI_LOGO} alt="" referrerPolicy="no-referrer" className="h-full w-full object-contain" />
-        </button>
-      )}
+      <AnimatePresence>
+        {/* Launcher */}
+        {!open && (
+          <motion.button
+            key="ai-assistant-launcher"
+            type="button"
+            onClick={() => setOpen(true)}
+            aria-label="Open AI assistant"
+            title="AI Assistant"
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0, opacity: 0 }}
+            whileHover={{ scale: 1.08 }}
+            whileTap={{ scale: 0.94 }}
+            transition={{ type: 'spring', stiffness: 420, damping: 26 }}
+            className="fixed bottom-5 right-5 z-40 flex h-14 w-14 items-center justify-center overflow-hidden rounded-full bg-white p-1 ring-2 ring-[#0F1E36] shadow-lg shadow-slate-900/25 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 cursor-pointer"
+          >
+            <img src={NYATI_LOGO} alt="" referrerPolicy="no-referrer" className="h-full w-full object-contain pointer-events-none" />
+          </motion.button>
+        )}
 
-      {/* Panel */}
-      {open && (
-        <section
-          role="dialog"
-          aria-label="Nyati AI Assistant"
-          className="fixed z-50 inset-x-0 bottom-0 top-16 sm:inset-auto sm:bottom-5 sm:right-5 sm:top-auto sm:h-[min(640px,calc(100vh-6rem))] sm:w-[400px] flex flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/20"
-        >
+        {/* Panel */}
+        {open && (
+          <motion.section
+            key="ai-assistant-dialog"
+            role="dialog"
+            aria-label="Nyati AI Assistant"
+            initial={{ opacity: 0, scale: 0.92, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.94, y: 16 }}
+            transition={{ type: 'spring', stiffness: 350, damping: 28 }}
+            className="fixed z-50 inset-x-0 bottom-0 top-16 sm:inset-auto sm:bottom-5 sm:right-5 sm:top-auto sm:h-[min(640px,calc(100vh-6rem))] sm:w-[400px] flex flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl border border-slate-200/90 bg-white/95 backdrop-blur-xl shadow-2xl shadow-slate-900/25 origin-bottom-right"
+          >
           {/* Header */}
           <div className="flex items-start justify-between gap-3 bg-[#0F1E36] px-4 py-3 text-white">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -379,8 +393,9 @@ export function ChatbotWidget({
               <Send className="h-4 w-4" />
             </button>
           </form>
-        </section>
+        </motion.section>
       )}
+      </AnimatePresence>
     </div>
   );
 }

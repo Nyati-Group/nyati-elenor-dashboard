@@ -1,4 +1,5 @@
 import { Menu, PenSquare, CalendarClock, Building2, ChevronDown } from 'lucide-react';
+import { motion } from 'motion/react';
 import { formatRevisionDate } from '../data/evaniaData';
 import { ELENOR_DATA } from '../data/elenorData';
 import { ELENOR_BUILDINGS, ElenorBuilding, PROJECTS, ProjectId } from '../types/navigation';
@@ -102,7 +103,7 @@ export function Header({
         <div className="border-t border-slate-100/90 px-4 sm:px-6 lg:px-8 py-2 bg-slate-50/40">
           <div role="tablist" aria-label="Building filter" className="flex items-center gap-2 overflow-x-auto">
             <span className="mr-1 shrink-0 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Building</span>
-            <div className="inline-flex rounded-xl border border-slate-200/80 bg-slate-200/50 p-1 text-xs font-medium backdrop-blur-xs">
+            <div className="relative inline-flex rounded-xl border border-slate-200/80 bg-slate-200/50 p-1 text-xs font-medium backdrop-blur-xs">
               {ELENOR_BUILDINGS.map((b) => {
                 const isSelected = building === b.id;
                 return (
@@ -112,13 +113,20 @@ export function Header({
                     role="tab"
                     aria-selected={isSelected}
                     onClick={() => onChangeBuilding(b.id)}
-                    className={`shrink-0 whitespace-nowrap rounded-lg px-3 py-1 text-xs font-medium transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-slate-900 ${
+                    className={`relative shrink-0 whitespace-nowrap rounded-lg px-3 py-1 text-xs font-medium transition-colors duration-200 active:scale-[0.97] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-slate-900 ${
                       isSelected
-                        ? 'bg-white text-slate-900 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] font-semibold'
+                        ? 'text-slate-900 font-semibold'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    {b.label}
+                    {isSelected && (
+                      <motion.div
+                        layoutId="activeBuildingPill"
+                        transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                        className="absolute inset-0 rounded-lg bg-white shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)]"
+                      />
+                    )}
+                    <span className="relative z-10">{b.label}</span>
                   </button>
                 );
               })}
